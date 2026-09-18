@@ -3,6 +3,7 @@ package club.heiqi.uilib.internal.devtools.headless;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 
+import club.heiqi.uilib.ui.render.BackdropQuality;
 import club.heiqi.uilib.ui.scene.runtime.SceneRuntime;
 
 /**
@@ -24,11 +25,13 @@ import club.heiqi.uilib.ui.scene.runtime.SceneRuntime;
  *
  * <p><b>环境事实也是请求事实</b>：字号倍率（{@link #fontScalePercent()}，经
  * {@link SceneRuntime#setFontScale(int)} 投影到 runtime）、诊断采样开关（{@link #diagnostics()}，
- * 经 {@code HeadlessEnvironment} 投影到装配用的环境端口）与外观档（{@link #theme()}，
- * 经 {@code SceneThemes.install} 在<b>装配期</b>装到页面 runtime）同样由请求声明。三者此前无入口：
- * 字号倍率恒为不缩放、诊断开关恒取生产配置、外观恒取库默认 —— 于是「同一命令在不同机器/配置下出图
- * 不同」与「不开游戏就没法看一帧花在哪/换个配色长什么样」都无从解决。缺省值取各自的中性水位
- * （不缩放 / 不采样 / 不干预），与「未声明」逐位等价。</p>
+ * 经 {@code HeadlessEnvironment} 投影到装配用的环境端口）、外观档（{@link #theme()}，
+ * 经 {@code SceneThemes.install} 在<b>装配期</b>装到页面 runtime）与玻璃质量档
+ * （{@link #backdropQuality()}，经 {@code BackdropQualityService.applyConfigured} 在装配期写入）
+ * 同样由请求声明。它们此前都无入口：字号倍率恒为不缩放、诊断开关恒取生产配置、外观与玻璃档恒取
+ * 库默认 —— 于是「同一命令在不同机器/配置下出图不同」与「不开游戏就没法看一帧花在哪/换个配色或
+ * 换套卷积核长什么样」都无从解决。缺省值取各自的中性水位（不缩放 / 不采样 / 不干预），
+ * 与「未声明」逐位等价。</p>
  */
 public final class HeadlessRequest {
 
@@ -114,11 +117,12 @@ public final class HeadlessRequest {
     private final int fontScalePercent;
     private final boolean diagnostics;
     private final String theme;
+    private final String backdropQuality;
     private final Path output;
 
     private HeadlessRequest(String pageId, int pageIndex, int width, int height, int frames, int settleFrames, int maxFrames,
             int background, String text, String script, long clockMillis, int fontScalePercent, boolean diagnostics,
-            String theme, Path output) {
+            String theme, String backdropQuality, Path output) {
         this.pageId = pageId;
         this.pageIndex = pageIndex;
         this.width = width;
@@ -133,6 +137,7 @@ public final class HeadlessRequest {
         this.fontScalePercent = fontScalePercent;
         this.diagnostics = diagnostics;
         this.theme = theme;
+        this.backdropQuality = backdropQuality;
         this.output = output;
     }
 
@@ -237,6 +242,22 @@ public final class HeadlessRequest {
         return theme;
     }
 
+    /**
+     * 玻璃（backdrop）质量档名；{@code null} = 不干预（维持进程当前档位）。
+     *
+     * <p>它是<b>请求级环境量</b>而非渲染选项：档位决定 shader 抽头预算（13 / 9），进而决定
+     * 卷积核与产物。合法档名取自 {@link BackdropQuality#values()} 的配置字面量，本类不复制清单。</p>
+     *
+     * <p>写入时机是装配期（{@code HeadlessSession.applyEnvironment}），与 {@code --theme} 同理由：
+     * 档位在渲染热路径上直读，装配期写入后本档全部帧一致。逐档独立进程下产物是请求的函数；
+     * {@code --share-context} 下每档 open 时各写一次（同值幂等），故多档不同档位仍然各自正确。</p>
+     *
+     * @return 档名或 {@code null}
+     */
+    public String backdropQuality() {
+        return backdropQuality;
+    }
+
     /** @return PNG 产物路径 */
     public Path output() {
         return output;
@@ -252,8 +273,36 @@ public final class HeadlessRequest {
                 + " fontScale=" + fontScalePercent + "%"
                 + " debug=" + diagnostics
                 + " theme=" + (theme == null ? "(page default)" : theme)
+                + " backdropQuality=" + (backdropQuality == null ? "(process current)" : backdropQuality)
                 + (TEXT_PROBE_PAGE.equals(pageId) ? " text=\"" + text + "\"" : "")
                 + " out=" + output;
+    }
+
+    /**
+     * 校验玻璃档名：未知取值直接失败，不静默回落 {@code full}。
+     *
+     * <p>{@link BackdropQuality#parse(String)} 的契约是「未知值回落 FULL」（配置容错语义）；
+     * 但命令行参数拼错档名时静默变成另一档，会让「跑了没变化」与「参数没接线」不可区分
+     * （同 {@code --theme} 的 {@code HeadlessThemes.requireValid} 口径）。</p>
+     *
+     * @param raw 档名；{@code null} = 不干预
+     */
+    private static void requireKnownBackdropQuality(String raw) {
+        if (raw == null) {
+            return;
+        }
+        String trimmed = raw.trim();
+        StringBuilder names = new StringBuilder();
+        for (BackdropQuality quality : BackdropQuality.values()) {
+            if (quality.configValue().equalsIgnoreCase(trimmed)) {
+                return;
+            }
+            if (names.length() > 0) {
+                names.append(" / ");
+            }
+            names.append(quality.configValue());
+        }
+        throw new IllegalArgumentException("未知玻璃档位：\"" + raw + "\"（可选：" + names + "）");
     }
 
     /** 请求构建器：默认值集中在此，校验在 {@link #build()} 一次收口。 */
@@ -273,6 +322,7 @@ public final class HeadlessRequest {
         private int fontScalePercent = SceneRuntime.FONT_SCALE_NONE_PERCENT;
         private boolean diagnostics;
         private String theme;
+        private String backdropQuality;
         private Path output = Paths.get("build", "reports", "headless", "shot.png");
 
         private Builder() {
@@ -364,6 +414,15 @@ public final class HeadlessRequest {
             return this;
         }
 
+        /**
+         * @param value 玻璃质量档名（{@code full} / {@code eco}）；{@code null} = 不干预
+         * @return this
+         */
+        public Builder backdropQuality(String value) {
+            this.backdropQuality = value;
+            return this;
+        }
+
         /** @param value PNG 路径 * @return this */
         public Builder output(Path value) {
             this.output = value;
@@ -401,10 +460,11 @@ public final class HeadlessRequest {
             }
             // 档名合法性在请求构建期收口（参数错误 → 退出码 2），不等装配期才发现。
             HeadlessThemes.requireValid(theme);
+            requireKnownBackdropQuality(backdropQuality);
             return new HeadlessRequest(pageId, pageIndex, width, height, frames, settleFrames, maxFrames,
                     background,
                     text == null ? "" : text, script == null ? "" : script, clockMillis, fontScalePercent,
-                    diagnostics, theme, output);
+                    diagnostics, theme, backdropQuality, output);
         }
     }
 }

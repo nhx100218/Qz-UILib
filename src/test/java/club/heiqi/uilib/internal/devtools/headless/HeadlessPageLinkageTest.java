@@ -137,6 +137,23 @@ public class HeadlessPageLinkageTest {
                 shot.output.contains("qz-shot-full"));
     }
 
+    /**
+     * 玻璃质量档必须真的接到渲染上，且降档后**仍走 shader**。
+     *
+     * <p>eco（9 抽头）此前从未在设施里执行过：它走 {@code #if UIB_TAP_BUDGET >= 13} 的 {@code #else}
+     * 分支，是 F38 修好 shader 编译后仍未被任何出图覆盖的代码路径。判据钉两件事 —— 档位真的生效
+     * （读数带 {@code quality=eco taps=9}），且该档的 shader 变体编译/链接通过（读数仍 {@code path=shader}；
+     * 落到 {@code fixed-pipeline} 就说明这一档的程序不可用）。</p>
+     */
+    @Test
+    public void backdropQualityAxisSelectsTheKernelVariant() throws Exception {
+        String output = render("linkage-backdrop-quality", "--page=glass", "--backdrop-quality=eco");
+        Assert.assertTrue("eco 档必须真的生效（读数应带档位与抽头预算）：\n" + output,
+                output.contains("backdrop: quality=eco taps=9"));
+        Assert.assertTrue("eco 档仍必须走 shader —— 落到 fixed-pipeline 说明 9 抽头变体不可用：\n" + output,
+                output.contains("path=shader"));
+    }
+
     /** 磨玻璃实验室在最小集上必须真的出图（页面覆盖：它此前只能靠开游戏看）。 */
     @Test
     public void glassPageRendersOnTheMinimalClasspath() throws Exception {
@@ -158,8 +175,10 @@ public class HeadlessPageLinkageTest {
     @Test
     public void glassBackdropUsesTheShaderPath() throws Exception {
         String output = render("linkage-glass-shader", "--page=glass");
+        // 断言取 " path=shader" 而非 "backdrop: path=shader"：读数行首是档位段（quality=… taps=…），
+        // 把它写进断言会让「加一个读数段」变成假红。
         Assert.assertTrue("玻璃未走 shader 路径（先查 GLSL 资源是否含非 ASCII / 着色器是否编译失败）：\n" + output,
-                output.contains("backdrop: path=shader"));
+                output.contains(" path=shader"));
     }
 
     /**
@@ -188,9 +207,9 @@ public class HeadlessPageLinkageTest {
     public void backdropPathIsNotInheritedAcrossPagesInOneProcess() throws Exception {
         String output = render("linkage-backdrop-shared", "--share-context", "--pages=glass,text-probe");
         Assert.assertEquals("glass 档应报 shader、text-probe 档应报 none（同进程复用时会暴露残留误报）：\n" + output,
-                1, countOf(output, "backdrop: path=shader"));
+                1, countOf(output, " path=shader"));
         Assert.assertEquals("无玻璃请求的页面必须如实报 none：\n" + output,
-                1, countOf(output, "backdrop: none"));
+                1, countOf(output, " none（本次渲染窗口内未发起"));
     }
 
     /** 出图不得在进程外留痕：临时配置目录跑完必须消失。 */

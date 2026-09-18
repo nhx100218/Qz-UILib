@@ -1272,6 +1272,49 @@ HEAD 一致，剥离注释后代码逐字节相同。）
 **刻意不改的**：`HeadlessShotGate` 仍只对 5 跳过、6 一律红 —— 除本页的类路径契约判据（它按设计就用
 最小集跑 chat、并把 6 断言为**正确**结果）外，门禁用的是正确启动器，出现 6 即测试配置错误，应当红。
 
+### F40 玻璃质量档纳入 headless：eco 卷积核变体首次端到端执行（2026-09-18）
+
+**动机**：`BackdropQuality`（`full` 13 抽头 / `eco` 9 抽头 / `solid` 不装滤镜）是进程级档位，
+headless 此前没有请求级入口 —— 于是 eco 走的 `#if UIB_TAP_BUDGET >= 13 → #else` 分支**从未在出图设施里
+执行过**。F38 修好 shader 编译后 13 抽头路径已有证据，9 抽头变体仍是盲区：它的程序能否编译/链接、
+降档后是否仍走 shader，都没有读数。这是「覆盖缺口」而非新功能。
+
+**接入**：
+
+- 新请求参数 `--backdrop-quality=NAME` / `--backdrop-qualities=NAME,…`（与 theme / font-scale / size / page
+  同构的第五个轴，产物后缀 `-bq<档>`）；
+- 装配期写入 `BackdropQualityService.applyConfigured`（进程级唯一写入口，含非法值告警与同值幂等短路）；
+- 档名在请求构建期校验：未知档名直接失败（参数错误 → 退出码 2），不静默回落 `full`
+  （`BackdropQuality.parse` 的契约是配置容错语义，命令行拼错不可接受）；
+- `backdrop:` 读数行首加 `quality=<档> taps=<预算>`：这是「这张图用的是哪套卷积核」的唯一入口，
+  且没有玻璃请求时也会打印（否则「档位设了但没请求」与「档位没接线」不可区分）。
+
+**验收（一手实测，1280×900）**：
+
+| 档位 | 读数 | colors | 说明 |
+|---|---|---|---|
+| `full` | `quality=full taps=13 path=shader requests=72` | 16336 | 默认档 |
+| `eco` | `quality=eco taps=9 path=shader requests=72` | 16340 | **9 抽头变体编译/链接通过并真的走了 shader** |
+| `solid` | `quality=solid taps=13 path=none requests=90 detail=disabled by page policy` | 1072 | 实色档下玻璃请求被策略禁用（预期） |
+
+- **两档卷积核真的不同**：`--backdrop-qualities=full,eco` 的产物逐像素差 **157190/1152000（13.64%）**；
+- 非法档名：`--backdrop-quality=bogus` ⇒ 退出码 2 + 可选值清单（`full / eco / solid`）；
+- 多档汇总行：`batch: 2/2 ok (逐档独立进程) — glass@1280x900 bq=full=ok glass@1280x900 bq=eco=ok`。
+
+**门禁**：`HeadlessPageLinkageTest.backdropQualityAxisSelectsTheKernelVariant`（eco ⇒ `quality=eco taps=9`
+且仍 `path=shader`）；变异（摘掉装配期接线）⇒ **FAILED**（11 tests / 1 failed，其余 10 绿）。
+
+**顺带修正**：两条既有判据（`glassBackdropUsesTheShaderPath` / `backdropPathIsNotInheritedAcrossPagesInOneProcess`）
+的断言写死了行首 `backdrop: path=`，读数加档位段后它们变红 —— 判据在守，但也暴露断言绑定了行首段。
+已改为不依赖行首的 ` path=shader`。教训：**读数行是可扩展的，断言不应绑定它的段序**。
+
+**独立审核（零上下文子代理）**：总判 **有条件通过**（1 条【应当修】+ 3 条【建议】，均已处置）。
+它一手复现了三档读数、13.64% 像素差、`--share-context` 四个档位序列的产物与逐档独立进程**逐字节相同**
+（跨越 OFF 档往返也无残留 ⇒「产物是请求的函数」在该轴成立）、唯一写入口无旁路、门禁变异恰好红在那一条、
+`cleanTest test build` 全绿（5816 tests / 0 failures / 7 skipped）。【应当修】是使用指南的轴清单 / 命名契约 /
+环境矩阵未随第五轴同步（4 处）；另有一条隐含前提已补进代码注释：**`applyEnvironment` 必须留在
+`createHost` 之后**（配置通道也会写档位，顺序反了会被静默盖成另一档）。
+
 ## 三、目标形态
 
 **四件套 + 一个出口：**

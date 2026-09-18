@@ -139,6 +139,8 @@ public final class HeadlessShotMain {
         String fontScales = null;
         String theme = null;
         String themes = null;
+        String backdropQuality = null;
+        String backdropQualities = null;
         boolean diagnostics = false;
         boolean shareContext = false;
         boolean probeOnly = false;
@@ -199,6 +201,10 @@ public final class HeadlessShotMain {
                     themes = arg.substring("--themes=".length());
                 } else if (arg.startsWith("--theme=")) {
                     theme = arg.substring("--theme=".length());
+                } else if (arg.startsWith("--backdrop-qualities=")) {
+                    backdropQualities = arg.substring("--backdrop-qualities=".length());
+                } else if (arg.startsWith("--backdrop-quality=")) {
+                    backdropQuality = arg.substring("--backdrop-quality=".length());
                 } else if (arg.startsWith("--font-scales=")) {
                     fontScales = arg.substring("--font-scales=".length());
                 } else if (arg.startsWith("--font-scale=")) {
@@ -227,6 +233,7 @@ public final class HeadlessShotMain {
         List<int[]> sizeTargets = new ArrayList<int[]>();
         List<Integer> fontScaleTargets = new ArrayList<Integer>();
         List<String> themeTargets = new ArrayList<String>();
+        List<String> backdropQualityTargets = new ArrayList<String>();
         try {
             // 页面轴：--page 是单页面（缺省），--pages 给出多页面矩阵；两者同时给出时 --pages 胜。
             if (pages == null || pages.trim().isEmpty()) {
@@ -271,11 +278,19 @@ public final class HeadlessShotMain {
                     themeTargets.add(name.isEmpty() ? null : name);
                 }
             }
+            // 玻璃档位同样允许 null（= 不干预，维持进程当前档位）。
+            if (backdropQualities == null || backdropQualities.trim().isEmpty()) {
+                backdropQualityTargets.add(backdropQuality);
+            } else {
+                for (String part : backdropQualities.split(",")) {
+                    String name = part.trim();
+                    backdropQualityTargets.add(name.isEmpty() ? null : name);
+                }
+            }
         } catch (RuntimeException e) {
             System.err.println("[headless] 批量参数非法：" + e.getMessage());
             return 2;
         }
-
         // config 页不接收外观档（主题对它是**配置内容**：配置页在页壳树构建前安装自己的偏好信号）。
         // 命令层给一条提示而不是静默忽略——「跑了没变化」与「参数没接线」在产物上不可区分，
         // 而本仓的通例是「不许静默降级」。
@@ -291,7 +306,7 @@ public final class HeadlessShotMain {
         }
 
         int total = pageNameTargets.size() * pageTargets.size() * sizeTargets.size()
-                * fontScaleTargets.size() * themeTargets.size();
+                * fontScaleTargets.size() * themeTargets.size() * backdropQualityTargets.size();
         boolean multi = total > 1;
         // 页面段进产物后缀只在多页面时：单页面时页面名已在默认文件名前缀里，再加一段是冗余；
         // 而多页面共用同一个 --out 时必须能区分（见 resolveOutput）。
@@ -306,32 +321,38 @@ public final class HeadlessShotMain {
                 int pageFrames = defaultFramesFor(pageName, frames, framesGiven);
                 for (Integer targetPageIndex : pageTargets) {
                     for (String targetTheme : themeTargets) {
-                        for (Integer targetFontScale : fontScaleTargets) {
-                            for (int[] size : sizeTargets) {
-                                int scalePercent = targetFontScale.intValue();
-                                List<String> suffixParts = new ArrayList<String>();
-                                if (multiPage) {
-                                    suffixParts.add("-pg" + pageName);
+                        for (String targetBackdropQuality : backdropQualityTargets) {
+                            for (Integer targetFontScale : fontScaleTargets) {
+                                for (int[] size : sizeTargets) {
+                                    int scalePercent = targetFontScale.intValue();
+                                    List<String> suffixParts = new ArrayList<String>();
+                                    if (multiPage) {
+                                        suffixParts.add("-pg" + pageName);
+                                    }
+                                    if (targetPageIndex.intValue() >= 0) {
+                                        suffixParts.add("-p" + targetPageIndex);
+                                    }
+                                    if (targetTheme != null) {
+                                        suffixParts.add("-th" + targetTheme);
+                                    }
+                                    if (targetBackdropQuality != null) {
+                                        suffixParts.add("-bq" + targetBackdropQuality);
+                                    }
+                                    if (scalePercent != SceneRuntime.FONT_SCALE_NONE_PERCENT) {
+                                        suffixParts.add("-fs" + scalePercent);
+                                    }
+                                    suffixParts.add("-" + size[0] + "x" + size[1]);
+                                    Path output = resolveOutput(out, pageName, suffixParts, multi);
+                                    requests.add(HeadlessRequest.builder().page(pageName)
+                                            .pageIndex(targetPageIndex.intValue())
+                                            .size(size[0], size[1]).frames(pageFrames)
+                                            .background(background).text(pageText)
+                                            .script(script).settle(settle).maxFrames(maxFrames)
+                                            .clock(clockMillis).fontScale(scalePercent)
+                                            .diagnostics(diagnostics).theme(targetTheme)
+                                            .backdropQuality(targetBackdropQuality)
+                                            .output(output).build());
                                 }
-                                if (targetPageIndex.intValue() >= 0) {
-                                    suffixParts.add("-p" + targetPageIndex);
-                                }
-                                if (targetTheme != null) {
-                                    suffixParts.add("-th" + targetTheme);
-                                }
-                                if (scalePercent != SceneRuntime.FONT_SCALE_NONE_PERCENT) {
-                                    suffixParts.add("-fs" + scalePercent);
-                                }
-                                suffixParts.add("-" + size[0] + "x" + size[1]);
-                                Path output = resolveOutput(out, pageName, suffixParts, multi);
-                                requests.add(HeadlessRequest.builder().page(pageName)
-                                        .pageIndex(targetPageIndex.intValue())
-                                        .size(size[0], size[1]).frames(pageFrames)
-                                        .background(background).text(pageText)
-                                        .script(script).settle(settle).maxFrames(maxFrames)
-                                        .clock(clockMillis).fontScale(scalePercent)
-                                        .diagnostics(diagnostics).theme(targetTheme)
-                                        .output(output).build());
                             }
                         }
                     }
@@ -532,6 +553,9 @@ public final class HeadlessShotMain {
         if (request.theme() != null) {
             args.add("--theme=" + request.theme());
         }
+        if (request.backdropQuality() != null) {
+            args.add("--backdrop-quality=" + request.backdropQuality());
+        }
         args.add("--out=" + request.output());
         return args;
     }
@@ -624,7 +648,8 @@ public final class HeadlessShotMain {
                 + "@" + request.width() + "x" + request.height()
                 + (request.fontScalePercent() == SceneRuntime.FONT_SCALE_NONE_PERCENT ? ""
                         : " fs" + request.fontScalePercent() + "%")
-                + (request.theme() == null ? "" : " theme=" + request.theme());
+                + (request.theme() == null ? "" : " theme=" + request.theme())
+                + (request.backdropQuality() == null ? "" : " bq=" + request.backdropQuality());
     }
 
     /**
@@ -885,7 +910,8 @@ public final class HeadlessShotMain {
                 + " [--size=WxH | --sizes=WxH,WxH,…] [--out=path] [--frames=N] [--settle=N] [--max-frames=N]"
                 + " [--bg=RRGGBB|transparent] [--text=…] [--actions=\"…\"|--script=file]"
                 + " [--clock=epochMillis]"
-                + " [--theme=NAME | --themes=NAME,…] [--font-scale=P | --font-scales=P,P,…] [--debug]"
+                + " [--theme=NAME | --themes=NAME,…] [--font-scale=P | --font-scales=P,P,…]"
+                + " [--backdrop-quality=full|eco | --backdrop-qualities=full,eco] [--debug]"
                 + " [--share-context] [--probe]"
                 + " [--nodes[=all]] [--find=TEXT] [--center=PATH]");
         out.println("批量默认逐档独立进程（产物只依赖请求）；--share-context 同进程复用（快，但产物带 atlas 历史依赖）");

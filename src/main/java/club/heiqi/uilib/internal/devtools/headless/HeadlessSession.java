@@ -21,6 +21,8 @@ import club.heiqi.uilib.internal.devtools.playground.TestPlaygroundHost;
 import club.heiqi.uilib.ui.diagnostic.UiPerformanceMonitor;
 import club.heiqi.uilib.ui.env.UiEnvironment;
 import club.heiqi.uilib.ui.host.UiHostRenderSupport;
+import club.heiqi.uilib.ui.render.BackdropQuality;
+import club.heiqi.uilib.ui.render.BackdropQualityService;
 import club.heiqi.uilib.ui.render.PaintContextCompositor;
 import club.heiqi.uilib.ui.render.UiMainLayerSnapshotService;
 import club.heiqi.uilib.ui.render.UiRenderContext;
@@ -154,10 +156,20 @@ public final class HeadlessSession implements AutoCloseable {
      *
      * <p>缺省倍率（不缩放）不写：写动作本身会推进字号代际，对「未声明缩放」的请求是纯属无谓的失效。</p>
      *
+     * <p><b>调用时机前提</b>：必须在 {@code createHost} 之后 —— 配置通道
+     * （{@code ConfigValueBridge}）也会写玻璃档位，若本方法先跑，装配期读到的配置默认值会把请求
+     * 声明的档位盖掉（顺序反了不会报错，只会静默出成另一档）。</p>
+     *
      * @param binding 装配结果
      * @param request 请求
      */
     private static void applyEnvironment(HostBinding binding, HeadlessRequest request) {
+        if (request.backdropQuality() != null) {
+            // 玻璃档位是渲染热路径的直读量（BackdropQualityService.current()），装配期写入即本档全部帧一致。
+            // 走 applyConfigured 而非直接写字段：它是进程级唯一写入口（含非法值告警与同值幂等短路）。
+            // 逐档独立进程下产物是请求的函数；--share-context 下每档 open 各写一次，同值幂等。
+            BackdropQualityService.getInstance().applyConfigured(request.backdropQuality());
+        }
         if (request.fontScalePercent() == SceneRuntime.FONT_SCALE_NONE_PERCENT) {
             return;
         }
@@ -437,11 +449,15 @@ public final class HeadlessSession implements AutoCloseable {
         String performance = environment.diagnostics().debugEnabled()
                 ? monitor.getRuntimeStats().toString() : null;
         long backdropRequests = UiRenderContext.getBackdropFilterInvocationCount() - backdropStart;
-        String backdrop = backdropRequests <= 0
-                ? "none（本次渲染窗口内未发起 backdrop 滤波请求）"
-                : "path=" + UiRenderContext.getLastBackdropFilterRenderPath().getLabel()
-                        + " requests=" + backdropRequests
-                        + " detail=" + UiRenderContext.getLastBackdropFilterDetail();
+        // 档位读数放在最前：它决定抽头预算（13 / 9），是「这张图用的是哪套卷积核」的唯一入口，
+        // 且没有玻璃请求时也要能读到（否则「档位设了但没请求」与「档位没接线」不可区分）。
+        BackdropQuality quality = BackdropQualityService.getInstance().current();
+        String backdrop = "quality=" + quality.configValue() + " taps=" + quality.tapBudget() + " "
+                + (backdropRequests <= 0
+                        ? "none（本次渲染窗口内未发起 backdrop 滤波请求）"
+                        : "path=" + UiRenderContext.getLastBackdropFilterRenderPath().getLabel()
+                                + " requests=" + backdropRequests
+                                + " detail=" + UiRenderContext.getLastBackdropFilterDetail());
         return new HeadlessArtifact(request, capabilities, report, drawSummary, request.output(), bytes,
                 elapsedMillis, renderedFrames, inputSource.device().describe(), performance, backdrop);
     }

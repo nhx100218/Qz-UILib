@@ -41,7 +41,7 @@ GL 上下文需要窗口句柄，而 LWJGL2 的 `Display.create()` 会创建**�
 | `--pages=A,B,…` | **多页面矩阵**（与尺寸 / 外观 / 字号轴同构）；与 `--page` 同时给出时本参数胜 |
 | `--page-index=N` / `--page-indexes=0,1,…` | `playground` 子页下标（0 总览 / 1 单行文本 / 2 多行文本 / 3 浮层 / 4 响应式 / 5 富文本 / 6 控制字符 / 7 LaTeX / 8 Markdown）；`hud` 页当作**锚点**（0 左上 / 1 右上 / 2 左下 / 3 右下），`config` 页当作 **section 下标**，`chat` / `text-probe` / `glass` 忽略 |
 | `--size=WxH` / `--sizes=WxH,…` | 单档 / 分辨率矩阵（360P~2K 任意尺寸，渲染到自建 FBO，与窗口无关） |
-| `--out=path` | 输出 PNG；矩阵出图时按轴追加后缀：`-pg<页面名>`（多页面时）/ `-p<下标>` / `-th<外观档>` / `-fs<百分比>` / `-WxH`，各段只在对应轴存在多档时出现 |
+| `--out=path` | 输出 PNG；矩阵出图时按轴追加后缀：`-pg<页面名>`（多页面时）/ `-p<下标>` / `-th<外观档>` / `-bq<玻璃档>` / `-fs<百分比>` / `-WxH`，各段只在对应轴存在多档时出现 |
 | `--actions="…"` / `--script=file` | 输入脚本（见下） |
 | `--text=…` | `text-probe` 的文本；`chat` 的消息串（语法见「聊天页」） |
 | `--bg=RRGGBB\|transparent` | 宿主背景，默认不透明深色；透明底请显式指定 |
@@ -49,6 +49,7 @@ GL 上下文需要窗口句柄，而 LWJGL2 的 `Display.create()` 会创建**�
 | `--clock=epochMillis` | 虚拟墙钟基准（默认 `2024-01-01T00:00:00Z`）：**最后一条**消息的到达时刻 + 帧时钟起点，见「出图确定性」 |
 | `--theme=NAME` / `--themes=NAME,…` | 外观档（`liquid-glass-dark` / `liquid-glass-light` / `solid-dark`）；不给 = 各页面用自己的默认外观，见「环境矩阵」 |
 | `--font-scale=P` / `--font-scales=P,…` | 用户级字号缩放百分比（100 = 不缩放，域 100~200）：单档 / 字号矩阵，见「环境矩阵」 |
+| `--backdrop-quality=NAME` / `--backdrop-qualities=NAME,…` | 玻璃质量档：`full`（13 抽头）/ `eco`（9 抽头）/ `solid`（不装滤镜）；不给 = 维持进程当前档位（默认 `full`）。档位决定 shader 卷积核与产物，见「玻璃质量档」 |
 | `--debug` | 打开诊断采样：摘要多一行 `perf:`（帧内阶段耗时与计数）。**不改变绘制**，像素与关闭态逐位相同 |
 | `--share-context` | 批量时同进程复用 GL/字体上下文（快，但产物带 atlas 历史依赖，见「出图确定性」）。默认逐档独立进程 |
 | `--probe` | 只打印能力（GL 版本、stencil、字体数量）不出图 |
@@ -56,7 +57,7 @@ GL 上下文需要窗口句柄，而 LWJGL2 的 `Display.create()` 会创建**�
 | `--find=TEXT` | 按可见文本找可命中节点（大小写不敏感子串），给出地址与中心点；无命中 exit 4 |
 | `--center=PATH` | 解节点地址取中心点（如 `--center=r2/1/0/8`） |
 
-页面、外观、字号、尺寸四个维度可同时给，按笛卡尔积出图（产物命名规则见「环境矩阵」）。
+页面、外观、玻璃档、字号、尺寸五个维度可同时给，按笛卡尔积出图（产物命名规则见「环境矩阵」）。
 
 多页面一次出图：
 
@@ -168,9 +169,9 @@ frame / wait 4     # 帧边界 / 在**此位置**空推进 4 帧（后续语句�
 build\headless\qz-shot.bat --page=playground --actions="move 315 88; frame; click; wait 4" --out=out\nav.png
 ```
 
-## 环境矩阵（外观 × 字号 × 分辨率 × 诊断）
+## 环境矩阵（外观 × 玻璃档 × 字号 × 分辨率 × 诊断）
 
-出图的观感不只由页面决定，也由**环境事实**决定。请求可声明四类环境量，与尺寸一样按档位扫：
+出图的观感不只由页面决定，也由**环境事实**决定。请求可声明五类环境量，与尺寸一样按档位扫：
 
 ```bat
 :: 外观矩阵
@@ -187,12 +188,13 @@ build\headless\qz-shot.bat --page=hud --size=1920x1080 --debug
 `out\fs-fs150-1280x720.png`（外观/字号非缺省才带 `-th<档名>` / `-fs<P>`，页下标在指定时带 `-p<N>`，
 **多页面**时每档带 `-pg<页面名>`）。缺省命令的路径因此逐字不变。
 
-三类环境量的**接入时机不同**，这不是实现细节而是语义差别：
+四类环境量的**接入时机不同**，这不是实现细节而是语义差别：
 
 | 环境量 | 时机 | 为什么 |
 |---|---|---|
 | 外观档 `--theme` | **装配期**（建树前） | 控件的配方派生在构建期捕获主题信号对象；换一个信号对象只影响此后构建的控件，已建树的部分不会重算 |
 | 字号倍率 `--font-scale` | 装配后、首帧前 | 走 `SceneRuntime.setFontScale`，自带字号代际失效通道，写一次即通知全部消费者 |
+| 玻璃档 `--backdrop-quality` | **装配期** | 档位在渲染热路径上被直读（`BackdropQualityService.current()`），装配期写一次即本档全部帧一致；换档必须早于本档首帧 |
 | 诊断 `--debug` | 每帧表态 | 帧是采样的管辖单位，值读是帧内直读 |
 
 **`--theme` 只对读主题系统的树有效**，别拿它当「所有页面都能换配色」：
@@ -355,6 +357,38 @@ build\headless\qz-shot.bat --page=glass --size=1280x900 --out=out\glass.png
 
 `solid-dark` 档请求数少是预期：实色档下多数表面不带滤镜配方，故只提交少量玻璃请求。
 
+## 玻璃质量档（backdrop quality）
+
+玻璃滤镜的 shader 抽头预算由**进程级档位**决定，headless 侧可按请求覆盖：
+
+| 档位 | 抽头预算 | 语义 |
+|---|---|---|
+| `full`（默认） | 13 | 完整档：`#if UIB_TAP_BUDGET >= 13` 分支，与引入档位前的核一致 |
+| `eco` | 9 | 省电档：`#else` 分支的 9 抽头向日葵螺旋核（覆盖半径与加权 RMS 同量级，片元采样次数 -30.8%） |
+| `solid` | （同 13） | 不装滤镜：玻璃请求被策略禁用，画面无 backdrop 绘制 |
+
+```bat
+:: 两档卷积核一次对比（产物 out\bq-bqfull-1280x900.png / out\bq-bqeco-1280x900.png）
+build\headless\qz-shot.bat --page=glass --size=1280x900 --backdrop-qualities=full,eco --out=out\bq.png
+```
+
+- **写入时机是装配期**（与 `--theme` 同类）：档位在渲染热路径上直读，装配期写一次即本档全部帧一致。
+  逐档独立进程下产物是请求的函数；`--share-context` 同进程批量下每档 open 各写一次（同值幂等），多档仍各自正确；
+- **档名拼错直接失败**（退出码 2 并列出可选值）：`BackdropQuality.parse` 的契约是「未知值回落 full」（配置容错语义），
+  命令行沿用它会静默变成另一档 —— 与 `--theme` 的档名校验同口径；
+- **实测（1280×900）**：
+
+| 命令 | `backdrop` 读数 | colors |
+|---|---|---|
+| `--backdrop-quality=full` | `quality=full taps=13 path=shader requests=72` | 16336 |
+| `--backdrop-quality=eco` | `quality=eco taps=9 path=shader requests=72` | 16340 |
+| `--backdrop-quality=solid` | `quality=solid taps=13 path=none requests=90 detail=disabled by page policy` | 1072 |
+
+- **两档真的走了不同的核**：`--backdrop-qualities=full,eco` 的产物逐像素差 **157190/1152000（13.64%）**；
+- `eco` 的 `path=shader` 是它**唯一**的证据来源：落到 `fixed-pipeline` 就说明 9 抽头变体编译/链接失败
+  （该分支在设施里此前从未被执行过，见规划 F40）；
+- 档位只影响**有玻璃请求的页面**：`config` 页本就没有 backdrop 请求（读数恒 `none`），给它设档位不改变产物。
+
 ## 出图确定性
 
 **同一命令在同一台机器上逐像素可复现**（实测：相隔 73 秒的两次 `--page=hud` 出图差异 0 像素，
@@ -409,20 +443,21 @@ build\headless\qz-shot-full.bat --page=hud --clock=1735689600000 --out=out\hud-2
 ## 怎么读输出
 
 ```
-[headless] request: page=playground#1 size=1280x720 frames=2 background=FF0E1014 settle=2 maxFrames=60
+[headless] request: page=playground#1 size=1280x720 frames=2 background=FF0E1014 settle=2 maxFrames=60 clock=1704067200000 fontScale=100% debug=false theme=(page default) backdropQuality=(process current)
 [headless] capabilities: gl=4.6.0 … stencil=8 maxTexture=32768 fonts=245 awtHeadless=false
 [headless] input: dispatched=3 pending=0 pointer=315,88 clock=133ms
 [headless] commands: commands=62 [fill=0 surface=16 border=0 text=46/1050ch segments=0 image=0] … bounds=1,1..1279,717 outsideViewport=0
 [headless] output: …png (200031 bytes)
 [headless] self-check: ok 1280x720 ink=100.00% inkPx=921600 opaquePx=921600 meanAlpha=255.0 colors=1290 glError=0
-[headless] backdrop: path=shader requests=64 detail=blur=4, saturation=1.00, family=LIQUID_GLASS, material=DARK_ULTRA_THIN vibrancy=1.18 lens=0.21, …
+[headless] backdrop: quality=full taps=13 path=shader requests=64 detail=blur=4, saturation=1.00, family=LIQUID_GLASS, material=DARK_ULTRA_THIN vibrancy=1.18 lens=0.21, …
 [headless] frames: 4/60
 [headless] elapsed: 615 ms
 ```
 
 - `commands`（命令面）与 `self-check`（像素面）是**两条独立证据**：命令说有绘制、像素说画出来了。只有一边成立即为设施故障，
   不是「UI 画得不好」；
-- `backdrop`：**本次渲染窗口的玻璃事实**。`path=shader` 是完整路径；`fixed-pipeline` / `tint-fallback` 是**降级档**
+- `backdrop`：**本次渲染窗口的玻璃事实**。行首 `quality=<档> taps=<抽头预算>` 是本次生效的档位与卷积核（13 / 9），
+  它**没有玻璃请求时也会打印**（否则「档位设了但没请求」与「档位没接线」不可区分）；其后 `path=shader` 是完整路径；`fixed-pipeline` / `tint-fallback` 是**降级档**
   （前者只有多重采样模糊、无 vibrancy/亮边/噪点/液态折射，后者是 tint 兜底）；`none` 表示**本窗口最后一次
   玻璃请求没有成功路径**——既可能一次请求都没发起，也可能是最后一次请求被策略/档位/几何/裁剪短路；
   两者按同行 `requests=` 的**有无**区分（有 = 发生过请求、无 = 未发起；判定用请求计数差，见下条，避免把上一档的残留报成本档）。`detail` 段含 `rev=N` 等过程量，
