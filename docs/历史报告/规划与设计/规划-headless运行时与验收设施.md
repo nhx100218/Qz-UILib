@@ -1726,6 +1726,61 @@ try/finally + 还原逐字节校验）：① 撤销宿主端口（回到 `System
    哨兵仍是文档里的剂量对照口径，不是本判据；
 4. chat / hud 在其它输入路径下的确定性**未测**。
 
+### F48 修饰键端到端判据：F47 铺路后的等价物对拍（2026-09-18）
+
+**动机**：F46 只钉「事件载荷里的修饰位正确」（`HeadlessInputDeviceTest`）—— 控件侧若压根不读修饰位，
+事件层仍全绿。本轮补上端到端那一层；它同时是 **F47 落地后才具备的能力**：F47 之前带输入脚本的出图
+不逐字节确定（同一命令连跑 8 次得 4 种产物，差异是 caret 竖线的相位族），等价物对拍必然假红
+（本轮第一版判据正是这样被撤销的，见 F47）。
+
+**实测（F47 修复后，各跑 2~3 次全同）**：
+
+| 页面 | `plain`（两次点击） | `ctrl`（第二次点击前按 Ctrl） | `drag`（拖拽 300→500） | `shift`（第二次点击前按 Shift） |
+|---|---|---|---|---|
+| 单行文本（`--page-index=1`） | `2aa96ac3…` | **同 plain** | `7eabf5c7…` | **同 drag** |
+| 多行文本（`--page-index=2`） | `653fd206…` | **同 plain** | `99b5d0ff…` | **同 drag** |
+
+⇒ 两页同型：**Shift+点击 ≡ 拖拽到同一点**（扩展选区）、**Ctrl+点击 ≡ 无修饰的两次点击**（不扩展）。
+两个 primitive（`SceneTextInputPrimitive` / `SceneTextAreaPrimitive`）各自独立实现，故各自钉一遍 ——
+多行页那条是**独立审核指出「属可覆盖而未做」后补的**（它一手跑通了该页的等价关系）。
+
+**门禁（两条）**：
+
+- `HeadlessPageLinkageTest.shiftClickExtendsSelectionAndCtrlClickDoesNot` —— 两页各三条断言
+  （反空跑自检 `plain != drag`、`shift == drag`、`ctrl == plain`）；耗时 **25.4 s**（八次出图；
+  只跑单页时实测 11.3~13.4 s）；
+- `HeadlessInputDeviceTest.releasingModifierClearsItFromLaterEvents` —— `keydown CONTROL_LEFT; frame;`
+  `keyup CONTROL_LEFT; frame; move 10 10` ⇒ 末帧不得再带 Ctrl / Shift。**它补的是审核指出的零覆盖**：
+  `keyup` 此前在 `src/test` 全树零命中，而使用指南明确承诺「`keydown` 按住、`keyup` 释放」——
+  按下有判据、释放没有，等于只钉了一半（与 F46 同族的「修饰状态维护」）。
+
+**变异（各自独立脚本 + try/finally + 还原逐字节校验）**：
+
+| 变异 | 端到端判据 | 设备层判据（F46） | keyup 判据 |
+|---|---|---|---|
+| ① 设备层修饰位改回互换 | **红** | **红** | — |
+| ② 控件忽略 Shift（单行 primitive） | **红** | 绿 | — |
+| ③ 控件忽略 Shift（多行 primitive） | **红** | 绿 | — |
+| ④ `keyup` 不清除按键状态 | — | — | **红** |
+| ⑤ 单击分支改成 setSelection（让 plain 与 drag 塌缩） | **红**（停在反空跑自检） | 绿 | — |
+| ⑥ `Ctrl` 也扩展选区 | **红**（停在第三条断言） | 绿 | — |
+
+②③ 就是端到端判据存在的理由：**事件载荷正确、控件行为错误**的工况只有端到端能发现；④ 是 keyup 判据的
+同理（状态清除）。⑤⑥ 证明「反空跑自检」与「第三条断言」都不是摆设（独立审核所做）。
+
+**隐性守护**：端到端判据依赖 F47 的帧时钟虚拟化 —— 帧时钟若回退到真实时间，它会**假红**
+（独立审核实测：回退后 2/2 变红，两次读出的摘要彼此不同）。断言消息里已写明「若两个摘要都随机变化、
+彼此都不同，先查帧时钟 F47 是否被回退」，避免后来人误判成语义缺陷。
+
+**边界（如实登记，按可达性分类）**：
+
+- **最小集可达、本轮已覆盖**：playground 单行文本页（`--page-index=1`）与多行文本页
+  （`--page-index=2`）的 Shift+点击扩展选区；
+- **仅完整 classpath 可达、未覆盖**：`ChatInputSurface` 的 Shift+滚轮（chat 容器形态；headless 的
+  `--page=chat` 是 HUD 形态）；
+- **同族但未覆盖（下一轮候选）**：`dblclick` / `cancel` 的页面级行为；`keydown` / `keyup` 的
+  **页面级**行为（设备层已覆盖）。
+
 ## 三、目标形态
 
 **四件套 + 一个出口：**

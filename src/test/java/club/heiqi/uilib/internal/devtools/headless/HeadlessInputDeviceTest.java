@@ -130,6 +130,28 @@ public class HeadlessInputDeviceTest {
         Assert.assertFalse(what + "：Meta 不得被误置", frame.isMetaDown());
     }
 
+    /**
+     * 释放修饰键（{@code keyup}）后，后续事件不得再带该修饰。
+     *
+     * <p>独立审核指出的覆盖缺口：{@code keyup} 在 {@code src/test} 全树**零命中**，而使用指南明确承诺
+     * 「{@code keydown} 按住、{@code keyup} 释放」。它守的是与 F46 同族的「修饰状态维护」——
+     * 按下有判据、释放没有，等于只钉了一半。</p>
+     */
+    @Test
+    public void releasingModifierClearsItFromLaterEvents() {
+        HeadlessInputSource source = new HeadlessInputSource(200, 100);
+        HeadlessInputScript.apply(source.device(),
+                "keydown CONTROL_LEFT; frame; keyup CONTROL_LEFT; frame; move 10 10");
+
+        SceneInputFrame pressed = source.drainFrame();
+        Assert.assertEquals(SceneKeyAction.PRESSED, pressed.getKeyEvents().get(0).getAction());
+        SceneInputFrame released = source.drainFrame();
+        Assert.assertEquals(SceneKeyAction.RELEASED, released.getKeyEvents().get(0).getAction());
+        SceneInputFrame moved = source.drainFrame();
+        Assert.assertFalse("keyup 之后的事件不得再带 Ctrl（修饰状态必须清除）", moved.isControlDown());
+        Assert.assertFalse("keyup 之后的事件不得再带 Shift", moved.isShiftDown());
+    }
+
     /** 整串文本（外部接管 / IME 语义）在一帧内以单条 TEXT 事件交付。 */
     @Test
     public void composeDeliversWholeTextInOneFrame() {

@@ -203,6 +203,12 @@ build\headless\qz-shot.bat --page=playground --actions="move 315 88; frame; clic
 `HeadlessInputDeviceTest.pointerModifiersFollowHeldKeysWithoutSwapping` 钉住它（补判据前，四条指针路径的
 Ctrl/Shift 参数位是互换的：脚本里按 Ctrl 会变成按 Shift，依赖修饰键的控件静默走错分支；规划 F46）。
 
+
+端到端也有判据：`HeadlessPageLinkageTest.shiftClickExtendsSelectionAndCtrlClickDoesNot` —— 在 playground
+单行文本页上，`Shift+点击` 必须与`拖拽到同一点`逐字节相同、`Ctrl+点击` 必须与`无修饰的两次点击`
+逐字节相同（三条断言，含反空跑自检）。它守的是设备层判据看不到的那层：**事件载荷对了、控件不读修饰位**
+（规划 F48 有变异证据）。注意它依赖 F47 的帧时钟虚拟化 —— 动画相位漂移时逐字节对拍不成立。
+
 ## 环境矩阵（外观 × 玻璃档 × 字号 × 分辨率 × 诊断）
 
 出图的观感不只由页面决定，也由**环境事实**决定。请求可声明五类环境量，与尺寸一样按档位扫：

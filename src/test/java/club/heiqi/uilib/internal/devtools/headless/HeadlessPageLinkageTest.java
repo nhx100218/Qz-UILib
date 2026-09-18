@@ -439,6 +439,55 @@ public class HeadlessPageLinkageTest {
     }
 
     /**
+     * 修饰键的**端到端**语义：Shift+点击在文本控件里扩展选区，Ctrl+点击不扩展。
+     *
+     * <p>判据用「**等价物**」而不是「像素变了」：Shift+点击必须与**拖拽到同一点**逐字节相同，
+     * Ctrl+点击必须与**无修饰的两次点击**逐字节相同。两个方向都能被钉住 —— 修饰位若互换，Shift 会
+     * 退化成普通点击、Ctrl 会变成扩展选区，两条断言同时红。</p>
+     *
+     * <p><b>它补的是设备层判据看不到的那一层</b>：{@code HeadlessInputDeviceTest} 只钉「事件载荷里的
+     * 修饰位正确」，控件侧若压根不读（或读错）修饰位，事件层仍全绿。第三条断言是反空跑自检 ——
+     * 先确认「拖拽 vs 普通点击」本身可区分，否则前两条毫无意义。</p>
+     *
+     * <p>本条在 F47（帧时钟虚拟化）之前**写不出来**：那时带输入脚本的出图不逐字节确定（同一命令
+     * 连跑 8 次得 4 种产物，差异是 caret 竖线的相位族），等价物对拍必然假红。F47 落地后实测四种脚本
+     * 各自 3/3 稳定：{@code plain = ctrl}、{@code drag = shift}、{@code plain != drag}。</p>
+     *
+     * <p><b>两页同型</b>：单行文本（{@code --page-index=1}）与多行文本（{@code --page-index=2}）
+     * 各钉一遍 —— 它们是两个 primitive（{@code SceneTextInputPrimitive} / {@code SceneTextAreaPrimitive}），
+     * 独立审核指出「文本域在最小集可达、属可覆盖而未做」，故一并覆盖。</p>
+     */
+    @Test
+    public void shiftClickExtendsSelectionAndCtrlClickDoesNot() throws Exception {
+        assertModifierEquivalence(1, "single");
+        assertModifierEquivalence(2, "multiline");
+    }
+
+    /** 端到端修饰键等价关系（给定 playground 页下标）。 */
+    private static void assertModifierEquivalence(int pageIndex, String label) throws Exception {
+        String page = "--page-index=" + pageIndex;
+        String plain = renderDigest("linkage-mod-" + label + "-plain", "--page=playground", page,
+                "--actions=move 300 180; frame; down; frame; up; frame; move 500 180; frame; down;"
+                        + " frame; up; wait 6");
+        String drag = renderDigest("linkage-mod-" + label + "-drag", "--page=playground", page,
+                "--actions=move 300 180; frame; down; frame; move 500 180; frame; up; wait 6");
+        String shift = renderDigest("linkage-mod-" + label + "-shift", "--page=playground", page,
+                "--actions=move 300 180; frame; down; frame; up; frame; keydown SHIFT_LEFT; frame;"
+                        + " move 500 180; frame; down; frame; up; wait 6");
+        String ctrl = renderDigest("linkage-mod-" + label + "-ctrl", "--page=playground", page,
+                "--actions=move 300 180; frame; down; frame; up; frame; keydown CONTROL_LEFT; frame;"
+                        + " move 500 180; frame; down; frame; up; wait 6");
+
+        String hint = "（若两个摘要都随机变化、彼此都不同，先查帧时钟 F47 是否被回退 —— 那是假红不是语义错）";
+        Assert.assertNotEquals("自检：拖拽与普通点击必须本来就不同（否则下面的等价断言是空的）："
+                + plain + " vs " + drag + hint, plain, drag);
+        Assert.assertEquals("Shift+点击必须与「拖拽到同一点」等价（扩展选区）：\n" + shift + hint,
+                drag, shift);
+        Assert.assertEquals("Ctrl+点击不得扩展选区（应与无修饰的两次点击等价）：\n" + ctrl + hint,
+                plain, ctrl);
+    }
+
+    /**
      * 出图必须逐字节确定（同一命令连跑三次）—— 设施的核心契约。
      *
      * <p>连跑**三次**而不是两次：独立审核用「宽度缓存预算改回 64」这一真实回归做剂量对照，
