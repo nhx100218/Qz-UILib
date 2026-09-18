@@ -905,7 +905,7 @@ public final class HeadlessShotMain {
     }
 
     private static void printUsage(PrintStream out) {
-        out.println("用法: HeadlessShotMain [--page=playground|text-probe|chat|hud|config|glass |"
+        out.println("用法: HeadlessShotMain [--page=playground|text-probe|chat|hud|config|glass|picker |"
                 + " --pages=NAME,NAME,…] [--page-index=N | --page-indexes=N,N,…]"
                 + " [--size=WxH | --sizes=WxH,WxH,…] [--out=path] [--frames=N] [--settle=N] [--max-frames=N]"
                 + " [--bg=RRGGBB|transparent] [--text=…] [--actions=\"…\"|--script=file]"
@@ -918,9 +918,9 @@ public final class HeadlessShotMain {
         out.println("主题档: " + HeadlessThemes.names() + "（不给 = 各页面用自己的默认外观）");
         out.println("目标寻址: --nodes 打印可命中节点（--nodes=all 打印完整树）；--find=TEXT 按可见文本找节点"
                 + "（给出地址与中心点）；--center=r0/3/1 解地址取中心点。三者都先推进一帧拿布局，不产出 PNG");
-        out.println("页面: playground / text-probe / chat / hud / config / glass；--pages 给多页面矩阵，"
-                + "--page-index 的含义随页面而变（playground = 演示页下标，hud = 锚点，"
-                + "config = section 下标，chat/text-probe/glass 忽略）");
+        out.println("页面: playground / text-probe / chat / hud / config / glass / picker；--pages 给多页面矩阵，"
+                + "--page-index 的含义随页面而变（playground = 演示页下标，hud = 锚点，config = section 下标，"
+                + "picker = 演示状态 0 全部/1 过滤/2 空态，chat/text-probe/glass 忽略）");
         out.println("glass 页：磨玻璃实验室（backdrop-filter 观感验收）；诊断卡上的「backdrop 路径」是本帧实际走的"
                 + "渲染路径（shader / fixed-pipeline / tint-fallback），--nodes=all 可读到该文本");
         out.println("config 页：生产配置页 UI（字段定制与游戏内同一入口）；配置真源落随会话删除的临时目录，"

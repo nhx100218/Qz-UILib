@@ -233,6 +233,15 @@ public final class HeadlessSession implements AutoCloseable {
             return createConfigHost(request, inputSource, environment);
         }
 
+        if (HeadlessRequest.PICKER_PAGE.equals(request.pageId())) {
+            PickerProbeHost pickerHost = new PickerProbeHost(inputSource, environment, theme);
+            if (request.pageIndex() >= 0) {
+                // 演示状态切换走宿主公开入口（同 playground 的 showPage：不依赖命中坐标）。
+                pickerHost.showState(request.pageIndex());
+            }
+            return new HostBinding(pickerHost, pickerHost.runtime());
+        }
+
         if (HeadlessRequest.GLASS_PAGE.equals(request.pageId())) {
             // 外观档经构造注入：实验室外壳/卡片的表面配方在建树期捕获主题信号对象（见 GlassLabHost 构造 javadoc）。
             GlassLabHost glassHost = new GlassLabHost(inputSource, environment, theme);
@@ -241,7 +250,7 @@ public final class HeadlessSession implements AutoCloseable {
 
         throw new HeadlessFailure(HeadlessFailure.Stage.CAPABILITY,
                 "未知页面：" + request.pageId()
-                        + "（当前提供 playground / text-probe / chat / hud / config / glass）");
+                        + "（当前提供 playground / text-probe / chat / hud / config / glass / picker）");
     }
 
     /**

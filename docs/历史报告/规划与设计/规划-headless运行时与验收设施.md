@@ -1315,6 +1315,72 @@ headless 此前没有请求级入口 —— 于是 eco 走的 `#if UIB_TAP_BUDGE
 环境矩阵未随第五轴同步（4 处）；另有一条隐含前提已补进代码注释：**`applyEnvironment` 必须留在
 `createHost` 之后**（配置通道也会写档位，顺序反了会被静默盖成另一档）。
 
+### F41 搜索选择器（picker）纳入 headless：控件级出图入口（2026-09-18）
+
+**动机**：picker 是库内体量最大的控件族（面板 + 分类导航 + 虚拟网格 + 成员带 + 信息条 + 密度档），
+而**生产配置页 schema 里没有任何字段挂 `SearchPickerSpec`**（`Values.searchPicker` 只在测试里出现）
+⇒ 改 picker 之后既不能从 `--page=config` 看到它，也没有别的出图入口。它是主要界面里最后一个
+没有出图入口的控件。
+
+**接入**：新建 `PickerProbeHost`（headless 包，宿主无关、零 MC 依赖）：
+
+- 控件级装配 `ScenePickerPanel.create(rt, Props.builder(...).open(恒真).build())`；
+- 候选数据由探针自备（24 个方块 id + 中文名），不接候选源 SPI —— 面板走结果信号路径，
+  与真机「装配层持候选、面板只渲染」的分工一致；
+- `--page-index` = 演示状态（0 全部 / 1 过滤 / 2 空态），走宿主公开入口 `showState`，
+  与 playground 的 `showPage`、config 的 `showSection` 同口径（不依赖命中坐标）。
+
+**为什么是控件级而不是走 `SearchPickerFieldSupport`**：后者要 `ValueSpec` + `Registry` + `Codec` /
+`SearchFunction` / `CurrentValuePresenter` 的完整接入面，而**生产 schema 没有 picker 字段** ——
+照测试夹具搭一套的话，出图反映的是「按测试拼出来的接线」，不是真机字段形态（与 F37 配置页
+「字段定制与游戏内同一个入口」的取向相反）。故本页明确限定为**控件级**，并在使用文档里写明无覆盖的部分。
+
+**验收（一手实测，1280×720）**：
+
+| 状态 | commands | colors | bytes | 关键读数 |
+|---|---|---|---|---|
+| 全部候选 | 116 | 1410 | 356569 | 顶栏 `24 results`、左栏 `All 24`、网格 4×6 |
+| 过滤后（`--page-index=1`） | 40 | 1133 | 354578 | 查询 `stone`，结果收缩 |
+| 空结果（`--page-index=2`） | 21 | 1061 | 355873 | 中栏 `No matching results`、`0 results` |
+
+命令面 116 > 40 > 21（结果越少画得越少）、三档 colors 两两不同 ⇒ 状态切换真的改了内容。
+
+**门禁**：`HeadlessPageLinkageTest.pickerPageRendersAllThreeStates`（三态命令面严格递减 + 三态 colors
+两两不同 —— 只测「exit=0 有产物」的话，把 `showState` 改成空操作也能全绿）；变异（`showState` 空操作）
+⇒ **FAILED**（12 tests / 1 failed，其余 11 绿）。
+
+**过程中被门禁拦住一次（如实记录）**：`PickerProbeHost` 初版带了一个单参构造（回落
+`SceneHostAssembly.defaultEnvironment()`，照 glass 包 `GlassLabHost` 的形态写），
+`HeadlessEnvironmentInjectionGuardTest` 立刻红 —— 该禁则要求 headless 生产包内不得出现
+`defaultEnvironment` / `ProcessUiEnvironment`（源码级扫描、剥注释后匹配）。修法是删掉单参构造：
+同包的 `TextProbeHost` / `ChatSceneProbeHost` / `HudSceneProbeHost` 都没有它，漏接环境即**编译失败**。
+**跨包差别**：`GlassLabHost` 保留单参构造在生产路径是正确语义（游戏内打开实验室就该用生产环境），
+它不在本包故不受此禁则约束 —— 照抄邻近类的形态而不看禁则作用域，正是这次踩到的点。
+
+**边界（如实登记）**：
+
+1. 控件级：字段外壳 / 行触发器 / 值与选择写回（`SearchPickerFieldSupport` 那条链）**无覆盖**；
+2. **物品图标不渲染**：探针 `VisualAdapter` 只提供文本标签，headless 没有物品贴图通路 ⇒ 格内是空槽 +
+   下方名称，**不能**据本页出图判断图标渲染；
+3. **悬停 tooltip 的内容**看不到（底栏 `Hover a result to see its full name and ID` 是常驻文案、默认可见，
+   看不到的是悬停后弹出的完整名称与 ID）—— 需要输入脚本悬停；
+4. **分类导航只有 `All` 一行**：探针不注入 `categories` / `categoryOf` ⇒ 分类行与分类维度切换未覆盖；
+5. **密度档只有 AUTO 求解出的一档**（`Density STANDARD`）：探针不注入 `densityPreference` ⇒
+   compact / standard / roomy 三档未覆盖；
+6. 受控 `open` 恒真且未接 `onCloseRequest` ⇒ **关闭与提交路径不可演示**（当前无害：关不掉也不崩）；
+7. 成员带（`listMembers` 模式）与候选源 SPI 路径未覆盖（探针只走结果信号路径）。
+
+**独立审核与处置（零上下文子代理）**：总判 **通过**（无【应当修】，4 条【建议】，提交前均已处置）。
+它一手复现了三态读数与退出码、矩阵命令与单跑逐字节相同、过滤 vs 空态像素差 149199/921600、
+门禁影子类变异恰好红在预期断言（12 tests / 1 failed / 11 绿）且 `classpath.txt` 逐字节还原、
+`cleanTest test build` 全绿。4 条建议的处置：① 指南与本节把「悬停提示默认看不到」改成准确表述
+（常驻文案可见、看不到的是 tooltip 内容）—— 这是本轮唯一一处失实；② 补登记漏掉的两条覆盖边界
+（分类导航只有 `All`、密度档只有 AUTO 一档）与关闭路径不可演示；③ **picker 实际吃 `--theme`**
+（dark colors=1410 / light colors=847），补进环境矩阵页面表与 `HeadlessThemes` 类注释（该表出处），
+并按 glass 的先例**补门禁** `pickerThemeAxisSwitchesContent`；④ `PickerProbeHost` 收紧为包内可见
+（同包其余三个探针宿主同口径）。审核另附一条归因结论：`--share-context` 多页序列「第 2 页起」的微小
+像素漂移由**页面切换本身**引起、与本轮无关（`text-probe` / `config` 同样复现），登记为既有现象。
+
 ## 三、目标形态
 
 **四件套 + 一个出口：**

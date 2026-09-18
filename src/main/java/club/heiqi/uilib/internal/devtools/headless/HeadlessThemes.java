@@ -30,6 +30,8 @@ import club.heiqi.uilib.ui.scene.theme.SceneTheme;
  *       {@code ChatMarkdownSettings}（气泡底、正文、组头、系统行…），不读 runtime 默认主题
  *       ⇒ 换档出图<b>逐像素相同</b>（实测 0/921600）。这不是本轴的缺陷，而是 chat3 存在两套配色
  *       来源的现状：只有容器形态（输入屏打开时）走 {@code SceneThemes}；</li>
+ *   <li>{@code picker}：面板表面经主题配方派生 ⇒ 换档即变色（实测 dark colors=1410 / light colors=847，
+ *       字节 356569 / 240753）；</li>
  *   <li>{@code glass}：外壳与卡片表面经 {@code SceneSurfaceBinder} 取来源主题 PANEL/GROUP 配方 ⇒ 换档即变色
  *       （实测 dark vs light：585339/1152000 像素不同）；采样场色带与材质阶梯是实验室的被测样本，
  *       按契约保留显式取值、不随主题变；</li>

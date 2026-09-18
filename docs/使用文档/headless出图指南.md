@@ -37,9 +37,9 @@ GL 上下文需要窗口句柄，而 LWJGL2 的 `Display.create()` 会创建**�
 
 | 参数 | 说明 |
 |---|---|
-| `--page=A\|B\|…` | 单页面；`playground` = 测试场地，`text-probe` = 单行文本探针，`chat` = 聊天 3.0 内容树，`hud` = 同一内容树走 HUD 宿主装配，`config` = 生产配置页，`glass` = 磨玻璃实验室（backdrop-filter 观感验收，均见下节） |
+| `--page=A\|B\|…` | 单页面；`playground` = 测试场地，`text-probe` = 单行文本探针，`chat` = 聊天 3.0 内容树，`hud` = 同一内容树走 HUD 宿主装配，`config` = 生产配置页，`glass` = 磨玻璃实验室（backdrop-filter 观感验收），`picker` = 搜索选择器（控件级，见下节） |
 | `--pages=A,B,…` | **多页面矩阵**（与尺寸 / 外观 / 字号轴同构）；与 `--page` 同时给出时本参数胜 |
-| `--page-index=N` / `--page-indexes=0,1,…` | `playground` 子页下标（0 总览 / 1 单行文本 / 2 多行文本 / 3 浮层 / 4 响应式 / 5 富文本 / 6 控制字符 / 7 LaTeX / 8 Markdown）；`hud` 页当作**锚点**（0 左上 / 1 右上 / 2 左下 / 3 右下），`config` 页当作 **section 下标**，`chat` / `text-probe` / `glass` 忽略 |
+| `--page-index=N` / `--page-indexes=0,1,…` | `playground` 子页下标（0 总览 / 1 单行文本 / 2 多行文本 / 3 浮层 / 4 响应式 / 5 富文本 / 6 控制字符 / 7 LaTeX / 8 Markdown）；`hud` 页当作**锚点**（0 左上 / 1 右上 / 2 左下 / 3 右下），`config` 页当作 **section 下标**，`picker` 页当作**演示状态**（0 全部 / 1 过滤 / 2 空态），`chat` / `text-probe` / `glass` 忽略 |
 | `--size=WxH` / `--sizes=WxH,…` | 单档 / 分辨率矩阵（360P~2K 任意尺寸，渲染到自建 FBO，与窗口无关） |
 | `--out=path` | 输出 PNG；矩阵出图时按轴追加后缀：`-pg<页面名>`（多页面时）/ `-p<下标>` / `-th<外观档>` / `-bq<玻璃档>` / `-fs<百分比>` / `-WxH`，各段只在对应轴存在多档时出现 |
 | `--actions="…"` / `--script=file` | 输入脚本（见下） |
@@ -205,6 +205,7 @@ build\headless\qz-shot.bat --page=hud --size=1920x1080 --debug
 | `chat` / `hud` | **逐像素相同**（实测 0/921600） | chat3 的 HUD 形态配色来自它自己的进程级色板 `ChatMarkdownSettings`（气泡底/正文/组头…），不读 runtime 默认主题；只有容器形态（输入屏打开时）走 `SceneThemes` |
 | `text-probe` | 无效 | 前景色写死，连安装都不做 |
 | `config` | **无效**（不接收） | 配置页在页壳树构建前安装自己的偏好信号（`ConfigThemePreference`，默认平面档）——主题对它是**配置内容**而非请求级环境量 |
+| `picker` | **变色**（实测 dark colors=1410 / light colors=847；字节 356569 / 240753） | 面板表面经主题配方派生（PANEL / OVERLAY / GROUP 等角色） |
 | `glass` | **变色**（实测 dark vs light 585339/1152000 像素不同） | 外壳/卡片表面唯一写入者是 `SceneSurfaceBinder`，配方取来源主题的 PANEL/GROUP；采样场色带与材质阶梯是被测样本，按契约保留显式取值 |
 
 出处：`HeadlessThemes` 的类注释记着这条边界与实测值。要用 `--theme` 看效果，请用 `playground` 或走主题系统的业务页面。
@@ -388,6 +389,50 @@ build\headless\qz-shot.bat --page=glass --size=1280x900 --backdrop-qualities=ful
 - `eco` 的 `path=shader` 是它**唯一**的证据来源：落到 `fixed-pipeline` 就说明 9 抽头变体编译/链接失败
   （该分支在设施里此前从未被执行过，见规划 F40）；
 - 档位只影响**有玻璃请求的页面**：`config` 页本就没有 backdrop 请求（读数恒 `none`），给它设档位不改变产物。
+
+## 搜索选择器（picker）
+
+`ScenePickerPanel`（库内体量最大的控件族：面板 + 分类导航 + 虚拟网格 + 成员带 + 信息条 + 密度档）的
+**控件级**出图入口。补它的理由：生产配置页 schema 里**没有字段挂 `SearchPickerSpec`**
+（`Values.searchPicker` 目前只出现在测试里），改 picker 之后从 `--page=config` 也看不到它 ——
+等于没有出图入口。
+
+```bat
+build\headless\qz-shot.bat --page=picker --size=1280x720 --out=out\picker.png
+build\headless\qz-shot.bat --page=picker --page-indexes=0,1,2 --out=out\picker-state.png
+```
+
+- `--page-index` = **演示状态**：0 = 全部候选（默认，24 项）/ 1 = 查询 `stone` 过滤后 / 2 = 空结果态
+  （查询 `zzzz`）；三态分别覆盖网格布局、过滤收缩与空态。走宿主公开入口切换，不依赖命中坐标；
+- 候选数据由探针自备（方块 id + 中文名），**不接候选源 SPI**：面板走结果信号路径、过滤由装配层负责 ——
+  与真机「装配层持候选、面板只渲染」的分工一致；
+- 面板是**居中 70% 浮层**（overlay 栈自管），宿主根只提供全屏承托底。
+
+**实测（1280×720）**：
+
+| 状态 | commands | colors | 画面要点 |
+|---|---|---|---|
+| 全部候选 | 116 | 1410 | 顶栏 `24 results`、左栏 `All 24`、网格 4×6 |
+| 过滤后（`--page-index=1`） | 40 | 1133 | 查询串 `stone`、结果收缩 |
+| 空结果（`--page-index=2`） | 21 | 1061 | 中栏 `No matching results`、`0 results` |
+
+命令面 116 > 40 > 21（结果越少画得越少）、三档 colors 两两不同 ⇒ 状态切换真的改了内容。
+门禁 `pickerPageRendersAllThreeStates` 就按这两条钉（变异「`showState` 空操作」⇒ FAILED）。
+
+**边界（别据此下结论）**：
+
+- 这是**控件级**装配，不是配置页字段接线 —— 字段外壳、行触发器、值与选择的写回
+  （`SearchPickerFieldSupport` + `ValueSpec` + `Registry`）**无覆盖**；那条要等生产 schema 出现
+  picker 字段才有入口；
+- 候选项里的**物品图标不渲染**（探针的 `VisualAdapter` 只提供文本标签，headless 没有物品贴图通路），
+  格内是空槽 + 下方名称 —— **不要**据本页出图判断图标渲染；
+- **悬停 tooltip 的内容看不到**：底栏那行 `Hover a result to see its full name and ID` 是**常驻文案**
+  （默认出图就可见），看不到的是指针停留后弹出的 tooltip（完整名称与 ID）—— 那需要输入脚本悬停；
+- **分类导航只有 `All` 一行**：探针不注入 `categories` / `categoryOf` ⇒ 分类行与分类维度切换未覆盖；
+- **密度档只有 AUTO 求解出的一档**（`Density STANDARD`）：探针不注入 `densityPreference` ⇒
+  compact / standard / roomy 三档未覆盖；
+- 受控 `open` 恒真且未接 `onCloseRequest` ⇒ **关闭与提交路径不可演示**（当前无害：关不掉也不崩）；
+- 成员带（`listMembers` 模式）与候选源 SPI 路径未覆盖（探针只走结果信号路径）。
 
 ## 出图确定性
 

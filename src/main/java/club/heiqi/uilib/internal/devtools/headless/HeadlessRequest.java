@@ -76,6 +76,19 @@ public final class HeadlessRequest {
      */
     public static final String GLASS_PAGE = "glass";
     /**
+     * 搜索选择器页面标识：{@code club.heiqi.uilib.ui.scene.control.ScenePickerPanel}（**控件级**装配，
+     * 候选数据由探针自备，见 {@code PickerProbeHost}）。
+     *
+     * <p>补这一页的理由：picker 是库内体量最大的控件族，而生产配置页 schema 里<b>没有字段挂
+     * {@code SearchPickerSpec}</b>（{@code Values.searchPicker} 目前只出现在测试里）⇒ 改 picker 之后
+     * 从 {@code --page=config} 也看不到它，等于没有出图入口。</p>
+     *
+     * <p>边界：建的是控件本身，不是配置页字段接线（那条要 {@code ValueSpec} + {@code Registry} 的
+     * 完整接入面）—— 面板的布局/外观/交互有覆盖，字段外壳与行触发器接线无覆盖。
+     * {@code pageIndex} = 演示状态（0 全部候选 / 1 查询过滤后 / 2 空结果态）。</p>
+     */
+    public static final String PICKER_PAGE = "picker";
+    /**
      * 聊天消息分隔符：{@code --text} 用它切成多条消息。
      *
      * <p>不取 {@code |}：那是 Windows 命令行的管道符，写进 {@code --text} 会被 shell 先解释掉。</p>

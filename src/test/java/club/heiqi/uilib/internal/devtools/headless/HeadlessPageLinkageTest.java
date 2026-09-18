@@ -154,6 +154,55 @@ public class HeadlessPageLinkageTest {
                 output.contains("path=shader"));
     }
 
+    /**
+     * picker 页必须接收 {@code --theme}：面板表面经主题配方派生，换档应改变像素。
+     *
+     * <p>补这条的理由与 glass 的 {@code glassThemeAxisSwitchesContent} 同型 —— 独立复核指出
+     * 「picker 实际吃外观档，但环境矩阵页面表与 {@code HeadlessThemes} 类注释都没补行、也没有判据」。
+     * 实测 dark colors=1410 / light colors=847（字节 356569 / 240753）。</p>
+     */
+    @Test
+    public void pickerThemeAxisSwitchesContent() throws Exception {
+        String output = render("linkage-picker-theme", "--page=picker",
+                "--themes=liquid-glass-dark,liquid-glass-light");
+        Set<String> colors = new LinkedHashSet<String>();
+        Matcher matcher = COLORS.matcher(output);
+        while (matcher.find()) {
+            colors.add(matcher.group(1));
+        }
+        Assert.assertEquals("两档外观必须画出不同内容（颜色数全同即主题没接到 picker 面板）：\n" + output,
+                2, colors.size());
+    }
+
+    /**
+     * picker 页三态都要出图，且状态切换**真的**改变了内容。
+     *
+     * <p>它守的交付：picker（库内体量最大的控件族）此前没有出图入口 —— 生产配置页 schema 里没有字段
+     * 挂 {@code SearchPickerSpec}，从 {@code --page=config} 也看不到它。本判据用「全部态 > 过滤态 >
+     * 空态」的命令面递减钉「切换真的生效」，用三档 colors 两两不同钉「画出来的东西不同」：
+     * 只测「exit=0 有产物」的话，把 {@code showState} 改成空操作也能全绿。</p>
+     */
+    @Test
+    public void pickerPageRendersAllThreeStates() throws Exception {
+        String all = render("linkage-picker-all", "--page=picker");
+        String filtered = render("linkage-picker-filtered", "--page=picker", "--page-index=1");
+        String empty = render("linkage-picker-empty", "--page=picker", "--page-index=2");
+        Assert.assertTrue("全部候选态必须有绘制命令（面板 + 网格）：\n" + all, commandsOf(all) > 0);
+        Assert.assertTrue("过滤态的命令面应小于全部态（结果真的收缩了）：\n" + all + "\n" + filtered,
+                commandsOf(filtered) < commandsOf(all));
+        Assert.assertTrue("空结果态的命令面应最小：\n" + filtered + "\n" + empty,
+                commandsOf(empty) < commandsOf(filtered));
+        Set<String> colors = new LinkedHashSet<String>();
+        for (String output : new String[] { all, filtered, empty }) {
+            Matcher matcher = COLORS.matcher(output);
+            if (matcher.find()) {
+                colors.add(matcher.group(1));
+            }
+        }
+        Assert.assertEquals("三态颜色数必须两两不同（画出来的内容不同）：\n" + all + "\n" + filtered + "\n" + empty,
+                3, colors.size());
+    }
+
     /** 磨玻璃实验室在最小集上必须真的出图（页面覆盖：它此前只能靠开游戏看）。 */
     @Test
     public void glassPageRendersOnTheMinimalClasspath() throws Exception {
