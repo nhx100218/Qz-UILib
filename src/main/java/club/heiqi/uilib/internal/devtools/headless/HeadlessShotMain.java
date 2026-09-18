@@ -35,7 +35,8 @@ import club.heiqi.uilib.ui.scene.runtime.SceneRuntime;
  * <p>批处理维度：`--sizes` 与 `--page-indexes` 可同时给出，按「页面 × 尺寸」笛卡尔积出图；
  * 多档时 {@code --out} 自动追加 {@code -p<下标>-<W>x<H>} 后缀，末尾输出汇总行。
  * 退出码：0 成功；2 参数错误；3 设施失败（装配 / 帧推进 / 读回 / 编码）；4 像素自检未通过或批量中存在失败档位；
- * 5 运行环境不具备 headless 出图能力（{@link #EXIT_ENVIRONMENT_UNAVAILABLE}）。</p>
+ * 5 运行环境不具备 headless 出图能力（{@link #EXIT_ENVIRONMENT_UNAVAILABLE}）；
+ * 6 当前类路径缺少请求所需的类型（{@link #EXIT_CLASSPATH_INSUFFICIENT}，通常是启动器选错）。</p>
  *
  * <p><b>为什么 5 要独立于 3</b>：二者都是「没出成图」，但处置相反 —— 3 说明设施或 UI 坏了，必须查；
  * 5 说明这台机器没能力出图（natives 加载失败 / 无窗口句柄能力 / 上下文建不起来），换环境即可。
@@ -51,6 +52,21 @@ public final class HeadlessShotMain {
      * agent 据它提示换 JDK / 加 Xvfb，而不是去查 UI。</p>
      */
     public static final int EXIT_ENVIRONMENT_UNAVAILABLE = 5;
+
+    /**
+     * 退出码：当前类路径缺少请求所需的类型（典型：用最小集启动器跑触及 Minecraft 类型的页面）。
+     *
+     * <p><b>为什么它要独立于 3 与 5</b>（与 {@link #EXIT_ENVIRONMENT_UNAVAILABLE} 独立于 3 同源）：
+     * 三种失败的处置互不相同 —— 3 是设施 / UI 坏了，要查代码；5 是这台机器没能力出图，要换环境；
+     * 6 是<b>启动器选错了</b>，换机器与查代码都无效，只能换 {@code qz-shot-full.bat}。混进 3 会让
+     * agent 去查一个没坏的 UI；混进 5 会让调用方把「配置错误」当成「环境不具备」跳过。</p>
+     *
+     * <p>实测触发路径：最小集类路径（{@code qz-shot.bat}，107 项、不含重编译的 Minecraft 类）下跑
+     * {@code --page=chat}，装配期抛 {@code NoClassDefFoundError: net/minecraft/util/IChatComponent}。
+     * 该错误此前直接冒泡出 {@code main} ⇒ JVM 退出码 <b>1</b>（不在契约内，脚本与
+     * {@code HeadlessShotGate} 无从分流）。</p>
+     */
+    public static final int EXIT_CLASSPATH_INSUFFICIENT = 6;
 
     private HeadlessShotMain() {
     }
@@ -73,12 +89,37 @@ public final class HeadlessShotMain {
     }
 
     /**
-     * 可测试的运行体（不调用 System.exit）。
+     * 可测试的运行体（不调用 System.exit）：**保证任何出口都落在退出码契约内**。
+     *
+     * <p>它只做一件事 —— 兜住 {@link #runRequest} 未捕获的错误。正常路径上 {@link HeadlessFailure}
+     * 已在各出口自行处理，故第一个 catch 是防御性的；真正起作用的是第二个：未捕获的 {@code Error}
+     * （类路径缺件时的 {@code NoClassDefFoundError} 等）此前直接冒泡出 {@code main}，JVM 以
+     * <b>退出码 1</b> 收场 —— 不在契约内，脚本与 {@code HeadlessShotGate} 无从分流。</p>
+     *
+     * <p>兜底落点单一是刻意的：分散到各出口（probe / 查询 / 单档 / 隔离）必然漂移，同
+     * {@link #exitCodeOf} 的理由。</p>
+     *
+     * @param args 命令行参数
+     * @return 退出码（0 / 2 / 3 / 4 / 5 / 6）
+     */
+    static int run(String[] args) {
+        try {
+            return runRequest(args);
+        } catch (HeadlessFailure failure) {
+            failure.printDiagnosis(System.err);
+            return exitCodeOf(failure);
+        } catch (Throwable unexpected) {
+            return diagnoseUnexpected(unexpected);
+        }
+    }
+
+    /**
+     * 请求解析与执行主体（不调用 System.exit）。
      *
      * @param args 命令行参数
      * @return 退出码
      */
-    static int run(String[] args) {
+    private static int runRequest(String[] args) {
         String page = "playground";
         String pages = null;
         String sizes = null;
@@ -411,7 +452,8 @@ public final class HeadlessShotMain {
      * <p>{@code --share-context} 可换回同进程复用（快，但产物带上述历史依赖），仅建议用于扫观感。</p>
      *
      * @param requests 已展开并校验的请求列表
-     * @return 退出码（0 全绿 / 3 有档位设施失败 / 4 有档位自检未过 / 5 运行环境不具备）
+     * @return 退出码（0 全绿 / 3 有档位设施失败 / 4 有档位自检未过 / 5 运行环境不具备 /
+     *         6 类路径缺件 —— 6 就地终止并原样上报，不参与聚合）
      */
     private static int runIsolated(List<HeadlessRequest> requests) {
         int facilityFailures = 0;
@@ -425,7 +467,14 @@ public final class HeadlessShotMain {
                 continue;
             }
             labels.add(labelOf(request) + "=FAILED");
-            // 子进程退出码即契约（见类注释）：3 设施失败 / 4 自检未过 / 5 运行环境不具备。
+            // 子进程退出码即契约（见类注释）：3 设施失败 / 4 自检未过 / 5 运行环境不具备 /
+            // 6 类路径缺件。6 必须在这里就地终止并原样上报：它是请求级不可恢复的事实
+            // （换档不会变好），落进下面的 else 会被算成「内容可疑(4)」，把配置错误伪装成 UI 问题。
+            if (code == EXIT_CLASSPATH_INSUFFICIENT) {
+                System.out.println("[headless] batch: 因类路径缺件终止，后续档未执行（"
+                        + labelOf(request) + "）");
+                return EXIT_CLASSPATH_INSUFFICIENT;
+            }
             if (code == EXIT_ENVIRONMENT_UNAVAILABLE) {
                 environmentMissing++;
             } else if (code == 3) {
@@ -735,7 +784,83 @@ public final class HeadlessShotMain {
      * @return {@link #EXIT_ENVIRONMENT_UNAVAILABLE} 或 3
      */
     private static int exitCodeOf(HeadlessFailure failure) {
+        // 刻意不在这里复用 missingTypeOf：HeadlessFailure 是「设施语义」的失败（带阶段标签），
+        // 目前没有任何构造点把类路径缺件包进来 —— chat 路径上 HeadlessSession.open 的
+        // catch (RuntimeException | Error) 是原样 rethrow，缺件会冒泡到进程边界归类为 6（实测）。
+        // 若将来新增出口把 NoClassDefFoundError 包进 HeadlessFailure，此处必须同步判 missingTypeOf，
+        // 否则同一条缺件会静默降级成 3。
         return failure.isEnvironmentUnavailable() ? EXIT_ENVIRONMENT_UNAVAILABLE : 3;
+    }
+
+    /**
+     * 未捕获错误 → 退出码与诊断：缺类型报 {@link #EXIT_CLASSPATH_INSUFFICIENT}，其余报设施失败 3。
+     *
+     * <p>判据是<b>类型 + 报错形态</b>（沿 cause 链找 {@code NoClassDefFoundError} /
+     * {@code ClassNotFoundException}，并排除 {@code Could not initialize class …} 这一 erroneous
+     * 类形态，见 {@link #missingTypeOf}）—— 与 {@code isEnvironmentUnavailable()} 同一取向：
+     * 让「这是配置事实」由可判定的结构承载，而不是靠人读日志。<b>类型本身不足以证明缺件</b>：
+     * {@code NoClassDefFoundError} 也用于「类在但静态初始化失败」，两者处置相反。</p>
+     *
+     * @param unexpected 未捕获的错误
+     * @return 6（类路径缺件）或 3（其余未预期失败）
+     */
+    static int diagnoseUnexpected(Throwable unexpected) {
+        String missingType = missingTypeOf(unexpected);
+        if (missingType != null) {
+            System.err.println("[headless] CLASSPATH-INSUFFICIENT：当前类路径缺少类型 " + missingType);
+            System.err.println("[headless] 处置：若该页面触及 Minecraft 类型（chat / hud），"
+                    + "换用完整开发类路径启动器 build\\headless\\qz-shot-full.bat（Linux/macOS 为 .sh）；"
+                    + "否则检查 exportHeadlessClasspath 的导出是否完整");
+            System.err.println("[headless] cause: " + unexpected.getClass().getName() + ": "
+                    + HeadlessFailure.brief(unexpected));
+            // 这里也打完整栈：判据含「报错消息形态」，一旦漏网（消息退化、包装层改变），没有栈就只剩
+            // 一行伪类型名，无从定位。独立审核实测过两种退化：无消息的 NoClassDefFoundError 会打印出
+            // 「缺少类型 NoClassDefFoundError」，带后缀的消息会打印出含括号的伪类型名。
+            unexpected.printStackTrace(System.err);
+            return EXIT_CLASSPATH_INSUFFICIENT;
+        }
+        System.err.println("[headless] UNEXPECTED-ERROR：未捕获的 " + unexpected.getClass().getName()
+                + ": " + HeadlessFailure.brief(unexpected));
+        unexpected.printStackTrace(System.err);
+        return 3;
+    }
+
+    /**
+     * JVM 对「类在、但 {@code <clinit>} 已失败」的 erroneous 类所报 {@code NoClassDefFoundError} 的前缀。
+     */
+    private static final String ERRONEOUS_CLASS_PREFIX = "Could not initialize class ";
+
+    /**
+     * 沿 cause 链找「类路径缺件」的根因。
+     *
+     * <p><b>为什么必须排除 {@code Could not initialize class …}</b>：{@code NoClassDefFoundError}
+     * 有两种成因，处置相反 —— 一是类<b>不在</b>类路径上（换启动器有效）；二是类在、但静态初始化
+     * 已经失败过（JVM 把该类型标成 erroneous，此后任何触碰都抛这个错，消息形如
+     * {@code Could not initialize class X}）。后者换启动器无效，属环境 / 初始化缺陷，必须落到 3
+     * 并带完整栈。<b>形态本身不可靠</b>正是排除的充分理由：同一个异常类型既可能是缺件、也可能不是，
+     * 判据不能只看类型。仓内同形态的记载见 {@code GlOffscreenSurface}（CI 的 Zulu 下 {@code Sys.<clinit>}
+     * 失败后 {@code Display} 成为 erroneous 类）—— 该路径在那里已被 {@code catch (Throwable)} 收口成 5，
+     * 故不作为「可达性」证据，只说明这种形态在本仓确实出现过。</p>
+     *
+     * @param failure 未捕获的错误
+     * @return 缺失类型名（点分形式）；不是类路径缺件时为 null
+     */
+    static String missingTypeOf(Throwable failure) {
+        Throwable current = failure;
+        while (current != null) {
+            if (current instanceof NoClassDefFoundError) {
+                String message = current.getMessage();
+                if (message == null || !message.startsWith(ERRONEOUS_CLASS_PREFIX)) {
+                    return message == null ? current.getClass().getSimpleName() : message.replace('/', '.');
+                }
+                // erroneous 类：跳过这一层继续沿链找更深的真实缺件；找不到就照 3 报（带完整栈）。
+            } else if (current instanceof ClassNotFoundException) {
+                String message = current.getMessage();
+                return message == null ? current.getClass().getSimpleName() : message.replace('/', '.');
+            }
+            current = current.getCause();
+        }
+        return null;
     }
 
     /**

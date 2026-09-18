@@ -36,10 +36,11 @@ import org.junit.Test;
  * 真实原因是校验期的可赋值性检查迫使 JVM 解析缺失的父类型（{@code return new ModernConfigScreen(…)}
  * 要证明它可赋给 {@code GuiScreen}）。故本类只钉端到端事实，不把机制推断写进断言。</p>
  *
- * <h3>为什么 {@code chat} / {@code hud} 不在覆盖内</h3>
+ * <h3>为什么 {@code chat} / {@code hud} 的<b>渲染</b>不在覆盖内</h3>
  * <p>它们的探针宿主在<b>方法体</b>里使用 {@code net.minecraft.*}（{@code ChatComponentText} 等），
  * 本来就只在 {@code classpath-full.txt} 上可跑（规划 F21 记录）。那是注入面的事实，不是被测行为；
- * 把它写进断言只会把「页面需要哪份 classpath」固化成假契约。</p>
+ * 把「页面需要哪份 classpath」固化成<b>渲染判据</b>只会变成假契约。但「缺件时<b>怎么报</b>」是契约
+ * 本身：见 {@code missingMinecraftDependencyReportsContractExitCode}，它刻意用最小集跑 chat 当触发手段。</p>
  *
  * <h3>为什么 playground 也要测</h3>
  * <p>它不是回归对象，是<b>正锚</b>：若最小集本身缺件（natives 未解压、classpath 未重建），
@@ -85,6 +86,55 @@ public class HeadlessPageLinkageTest {
         // 三档各一条 self-check 行；三档颜色数必须两两不同（实测 1156 / 1066 / 1117）。
         Assert.assertEquals("三档 section 必须画出不同内容 —— 三档颜色数全同时说明切换没接线：\n" + output,
                 3, colors.size());
+    }
+
+    /**
+     * 归类判据必须区分 {@code NoClassDefFoundError} 的<b>两种成因</b>：类不在类路径上（换启动器有效）
+     * vs 类在、但静态初始化已失败（erroneous 类，换启动器无效）。
+     *
+     * <p>后者是独立审核给出的 JVM 级反例：{@code <clinit>} 首次失败后，第二次触碰抛的
+     * {@code NoClassDefFoundError} 消息是 {@code Could not initialize class X} 而不是类名。若不排除，
+     * 那类<b>环境 / 初始化</b>缺陷会被误报成「启动器选错」，把处置指向错误的动作（同一异常类型既可能是
+     * 缺件、也可能不是 —— 判据不能只看类型）。本判据不需要 GL 环境与进程外直启：直接构造异常实例。</p>
+     */
+    @Test
+    public void erroneousClassIsNotClassifiedAsMissingClasspath() {
+        Assert.assertEquals("erroneous 类不是类路径缺件，应归设施失败 3（带栈）：",
+                3, HeadlessShotMain.diagnoseUnexpected(
+                        new NoClassDefFoundError("Could not initialize class foo.Bar")));
+        Assert.assertEquals("真正的缺件仍归 6：",
+                HeadlessShotMain.EXIT_CLASSPATH_INSUFFICIENT,
+                HeadlessShotMain.diagnoseUnexpected(
+                        new NoClassDefFoundError("net/minecraft/util/IChatComponent")));
+        Assert.assertEquals("ClassNotFoundException 同样归 6：",
+                HeadlessShotMain.EXIT_CLASSPATH_INSUFFICIENT,
+                HeadlessShotMain.diagnoseUnexpected(new ClassNotFoundException("foo.Bar")));
+    }
+
+    /**
+     * 用最小集启动器跑需要完整类路径的页面（chat）：必须在**契约内**报「类路径缺件」。
+     *
+     * <p>它守的回归（实测发生过）：装配期抛出的 {@code NoClassDefFoundError} 此前直接冒泡出
+     * {@code main}，JVM 以退出码 <b>1</b> 收场；更糟的是<b>逐档独立进程批量</b> —— 子进程各以 1 退出、
+     * 父进程把它聚合算成「内容可疑(4)」并继续跑完剩余档。两者都不是「启动器选错」该有的表现。现由
+     * {@code HeadlessShotMain.run} 的进程边界兜底归类为
+     * {@link HeadlessShotMain#EXIT_CLASSPATH_INSUFFICIENT}，并给出可操作指引。</p>
+     *
+     * <p>这条判据刻意用 <b>最小集</b> 跑 chat（它触及 {@code net.minecraft.util.IChatComponent}）：
+     * 「页面需要哪份 classpath」是注入面事实，此处只拿它当<b>触发手段</b>，钉的是退出码契约与指引 ——
+     * 与类头「chat / hud 不在覆盖内」不矛盾：那条讲<b>渲染判据</b>不在最小集上跑，本判据钉的是
+     * 「装配失败怎么报」。</p>
+     */
+    @Test
+    public void missingMinecraftDependencyReportsContractExitCode() throws Exception {
+        Shot shot = runShot("linkage-classpath", "--page=chat");
+        HeadlessShotGate.assumeEnvironmentAvailable("linkage-classpath", shot.exit, shot.output);
+        Assert.assertEquals("类路径缺件必须报契约内的 6（此前是未捕获错误 → 退出码 1，契约外）：\n"
+                + shot.output, HeadlessShotMain.EXIT_CLASSPATH_INSUFFICIENT, shot.exit);
+        Assert.assertTrue("诊断必须自证缺的是哪个类型：\n" + shot.output,
+                shot.output.contains("CLASSPATH-INSUFFICIENT"));
+        Assert.assertTrue("诊断必须给出可操作指引（换完整集启动器）：\n" + shot.output,
+                shot.output.contains("qz-shot-full"));
     }
 
     /** 磨玻璃实验室在最小集上必须真的出图（页面覆盖：它此前只能靠开游戏看）。 */
@@ -155,6 +205,28 @@ public class HeadlessPageLinkageTest {
 
     /** 直启一次出图并返回进程输出；退出码非 0 即断言失败（附完整输出便于定因）。 */
     private static String render(String name, String... extraArgs) throws Exception {
+        Shot shot = runShot(name, extraArgs);
+        // 运行环境不具备（无 GL / natives 加载不了）时跳过，其余非 0 一律红。
+        HeadlessShotGate.assumeEnvironmentAvailable(name, shot.exit, shot.output);
+        Assert.assertEquals("headless 直启失败（" + name + " exit=" + shot.exit + "）：\n" + shot.output,
+                0, shot.exit);
+        // 单档落主名、多档落带轴后缀的名字，故只要求「同前缀至少一个产物」。
+        List<Path> produced = sameStem(shot.outputPath);
+        Assert.assertFalse("未产出 PNG（" + name + "）：\n" + shot.output, produced.isEmpty());
+        return shot.output;
+    }
+
+    /**
+     * 直启一次出图并返回结果，**不判定退出码** —— 供「预期失败」的判据使用。
+     *
+     * <p>与 {@link #render} 共用同一条直启链路（同 classpath 注入、同产物清理、同输出捕获），
+     * 差别只有「谁来判退出码」：正常路径判 0，契约判据自己判期望值。</p>
+     *
+     * @param name      用例内产物名
+     * @param extraArgs 追加参数
+     * @return 退出码 + 完整输出 + 期望产物路径
+     */
+    private static Shot runShot(String name, String... extraArgs) throws Exception {
         String classpathFile = System.getProperty("qz.headless.classpathFile", "");
         Assume.assumeTrue("未注入 headless 直启 classpath，跳过页面可链接性门禁",
                 !classpathFile.isEmpty() && new File(classpathFile).isFile());
@@ -198,13 +270,20 @@ public class HeadlessPageLinkageTest {
             stream.close();
         }
         int exit = process.waitFor();
-        // 运行环境不具备（无 GL / natives 加载不了）时跳过，其余非 0 一律红。
-        HeadlessShotGate.assumeEnvironmentAvailable(name, exit, text);
-        Assert.assertEquals("headless 直启失败（" + name + " exit=" + exit + "）：\n" + text, 0, exit);
-        // 单档落主名、多档落带轴后缀的名字，故只要求「同前缀至少一个产物」。
-        List<Path> produced = sameStem(out);
-        Assert.assertFalse("未产出 PNG（" + name + "）：\n" + text, produced.isEmpty());
-        return text;
+        return new Shot(exit, text, out);
+    }
+
+    /** 一次直启的结果：退出码 + 完整输出 + 期望产物路径。 */
+    private static final class Shot {
+        private final int exit;
+        private final String output;
+        private final Path outputPath;
+
+        Shot(int exit, String output, Path outputPath) {
+            this.exit = exit;
+            this.output = output;
+            this.outputPath = outputPath;
+        }
     }
 
     /** 与给定产物同前缀的 PNG（多档矩阵下会有多个）。 */

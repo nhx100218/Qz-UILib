@@ -1212,12 +1212,65 @@ HEAD 一致，剥离注释后代码逐字节相同。）
 3. **（已处置，保留记录）`HeadlessSession.close()` 的重复 `host.dispose()` 已在本轮清理**（独立复核确认宿主 dispose 幂等：
    `Owner` 回收有 disposed 短路，第二次调用恒为 no-op）。原计划「留待下一轮」，复核给出幂等证据后一并删除，
    属零行为差异的清理；
-4. **退出码契约缺口（已登记，未做）**：用错启动器（最小集跑 `chat` / `hud`）时装配抛未捕获的
-   `NoClassDefFoundError: net/minecraft/...`，进程以**退出码 1** 收场 —— 不在契约的 0/2/3/4/5 内，
-   脚本与 `HeadlessShotGate` 无法按契约分流。本轮只在使用文档写明处置（换 `qz-shot-full.bat`）；
-   把未捕获 `Error` 纳入契约（归类 + 可操作指引）留作下一轮；
+4. **退出码契约缺口**：用错启动器（最小集跑 `chat` / `hud`）时装配抛未捕获的
+   `NoClassDefFoundError: net/minecraft/...`，进程以**退出码 1** 收场 —— 不在契约的 0/2/3/4/5 内。
+   本轮先在使用文档写明处置（换 `qz-shot-full.bat`），收口见 **F39**；
 5. GLSL 里 `#if UIB_TAP_BUDGET` 两档（13/9）都实测可编译，但 headless 只跑到完整档（`BackdropQualityService`
    默认档）；9 档的端到端出图未覆盖。
+
+### F39 失败语义收口：类路径缺件不再破坏退出码契约（2026-09-18）
+
+**动机**：F38 的独立复核顺带指出 —— 用最小集启动器跑 `chat` / `hud` 时装配抛未捕获的
+`NoClassDefFoundError`，直接冒泡出 `main`，JVM 以**退出码 1** 收场。1 不在契约（0/2/3/4/5）内，
+脚本与 `HeadlessShotGate` 无从分流：既不能判「环境不具备」跳过，也不能按「设施失败」定位。
+
+**修法（三条，缺一条都不闭环）**：
+
+1. **进程边界兜底**：`HeadlessShotMain.run` 拆成「兜底包装 + `runRequest` 主体」，新增
+   `catch (Throwable)` → `diagnoseUnexpected`。兜底落点**单一**是刻意的：probe / 查询 / 单档 / 逐档隔离
+   四个出口各写一遍必然漂移（同 `exitCodeOf` 的理由）。
+2. **新退出码 6**（`EXIT_CLASSPATH_INSUFFICIENT`）：判据是**类型 + 报错形态**（沿 cause 链找
+   `NoClassDefFoundError` / `ClassNotFoundException`，并**排除** `Could not initialize class …` 这一
+   erroneous 类形态 —— 见下方「独立审核」），不靠人读日志。**为什么独立于 3 与 5**：三种失败的处置
+   互不相同 —— 3 查代码、5 换环境、6 换启动器；混进 3 会让 agent 去查一个没坏的 UI，混进 5 会让
+   调用方把配置错误当环境问题跳过。
+3. **聚合一致**：逐档独立进程路径（`runIsolated`）里子进程返回 6 时**就地终止并原样上报** ——
+   6 是请求级不可恢复（换档不会变好），落进既有的 `else` 分支会被算成「内容可疑(4)」，
+   把配置错误伪装成 UI 问题。
+
+**可操作指引**：诊断打印缺失类型名 + 「换 `qz-shot-full.bat`」；若缺的不是 MC 类型，则提示检查
+`exportHeadlessClasspath` 的导出是否完整。
+
+**验收（一手实测，最小集 `qz-shot.bat`）**：
+
+| 命令 | 修前 | 修后 |
+|---|---|---|
+| `--page=chat` | 未捕获 `NoClassDefFoundError` ⇒ **exit=1** | `CLASSPATH-INSUFFICIENT：当前类路径缺少类型 net.minecraft.util.IChatComponent` + 指引 ⇒ **exit=6** |
+| `--page=chat --sizes=640x360,1280x720`（逐档独立进程） | 子进程各以 1 退出 ⇒ 父进程既有聚合把它算成「内容可疑」⇒ **exit=4**（且两档都跑完、无就地终止） | **exit=6** + `batch: 因类路径缺件终止，后续档未执行（chat@640x360）` |
+| `--page=playground` | 0 | **0**（不变） |
+| `--page=nosuchpage` | 3 | **3**（不变，未知页面仍是能力探测失败） |
+
+**门禁**：`HeadlessPageLinkageTest.missingMinecraftDependencyReportsContractExitCode` —— 最小集跑 chat，
+断言退出码 = 6、输出含 `CLASSPATH-INSUFFICIENT` 与 `qz-shot-full`；变异验证：把归类返回值改成 1
+（模拟「未归类、冒泡成 JVM 退出码 1」）⇒ **FAILED**（9 tests / 1 failed，其余 8 绿）。为此把测试的直启
+辅助拆成 `runShot`（不判退出码）+ `render`（判 0），共用同一条直链。
+
+**独立审核与处置（零上下文子代理）**：总判 **有条件通过**（3 条【应当修】+ 6 条【建议】，提交前均已处置；
+逐条处置与流程细节留在提交说明，本节只留结论）。审核独立复现了 10 条通路的退出码（单档 / 逐档隔离 /
+同进程批量 / 目标寻址 / `--probe` / `--find` / `--pages` 均 6，playground 与 `--pages=playground,glass` 为 0，
+未知页面 3 —— **全部落在契约内**）、聚合不吞并 6、真实缺陷（`StackOverflowError` / `AssertionError` /
+`OutOfMemoryError` 等）落 3 且带完整栈、变异在最终 revision 上为 10 tests / 2 failed 且可字节级还原、
+`cleanTest test build` 全绿（5815 tests / 0 failures / 7 skipped）。处置要点：
+
+- `missingTypeOf` 排除 erroneous 类形态（`Could not initialize class …`，类在但 `<clinit>` 已失败）并补单元判据
+  `erroneousClassIsNotClassifiedAsMissingClasspath`（erroneous → 3、真缺件 → 6、`ClassNotFoundException` → 6）；
+- `exitCodeOf` 写明「被包裹的缺件」边界（行为不变：当前不可达，将来若把缺件包进 `HeadlessFailure` 须同步判）；
+- `runIsolated` 的 `@return` 与 `HeadlessShotGate` 类注释补 6；
+- 指南区分「逐档隔离」与「同进程批量」报 6 的行为（前者打印「后续档未执行」，后者直接终止）；
+- 6 分支补打完整栈：判据含报错消息形态，漏网时只有一行伪类型名、无从定位。
+
+**刻意不改的**：`HeadlessShotGate` 仍只对 5 跳过、6 一律红 —— 除本页的类路径契约判据（它按设计就用
+最小集跑 chat、并把 6 断言为**正确**结果）外，门禁用的是正确启动器，出现 6 即测试配置错误，应当红。
 
 ## 三、目标形态
 

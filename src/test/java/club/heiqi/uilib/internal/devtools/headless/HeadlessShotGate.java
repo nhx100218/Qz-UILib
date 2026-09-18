@@ -7,10 +7,12 @@ import org.junit.Assume;
  *
  * <h3>它守的区分</h3>
  * <p>本包与 {@code font.render.software.HeadlessTextParityTest} 的若干门禁都靠<b>进程外直启</b>
- * {@code HeadlessShotMain} 做判据。直启失败有两种：一种是这台机器根本建不出 GL 上下文
+ * {@code HeadlessShotMain} 做判据。直启失败有两类：一类是这台机器根本建不出 GL 上下文
  * （natives 加载失败 / 无窗口句柄能力），退出码 {@link HeadlessShotMain#EXIT_ENVIRONMENT_UNAVAILABLE}；
- * 另一种是能出图但设施 / 内容坏了（退出码 3 / 4）。若一律断言失败，门禁在无图形环境上会变成
- * 「环境检测器」；若一律跳过，真实回归又会被掩盖。故只放行前者，其余非 0 一律红。</p>
+ * 另一类是能出图但设施 / 内容坏了（3 / 4），或类路径缺件
+ * （{@link HeadlessShotMain#EXIT_CLASSPATH_INSUFFICIENT}，通常是启动器选错）。若一律断言失败，
+ * 门禁在无图形环境上会变成「环境检测器」；若一律跳过，真实回归又会被掩盖。
+ * 故<b>只放行 5</b>，其余非 0 一律红 —— 包括 6：门禁自己用的是正确启动器，出现 6 即测试配置错误。</p>
  *
  * <h3>实测成因（保留以免后人重复定位）</h3>
  * <p>CI（ubuntu + Zulu 17）的 {@code libjawt.so} 不导出 {@code SUNWprivate_1.1} 版本符号，

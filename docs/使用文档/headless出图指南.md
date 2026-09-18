@@ -254,7 +254,7 @@ build\headless\qz-shot.bat --page=chat --text="Steve:**粗体** 与 `code`;;md:#
 ```
 
 **必须用完整集启动器**（`qz-shot-full.bat`）：chat3 内容树在方法体里使用 `net.minecraft.*`（`IChatComponent` 等），
-最小集类路径下装配会抛 `NoClassDefFoundError`、进程以**退出码 1** 收场（未捕获错误，不在退出码表契约内）。
+最小集类路径下装配会抛 `NoClassDefFoundError`，进程以**退出码 6**（`CLASSPATH-INSUFFICIENT`）收场并给出换启动器的指引。
 `hud` 页同理。
 
 两点注意：
@@ -439,16 +439,25 @@ build\headless\qz-shot-full.bat --page=hud --clock=1735689600000 --out=out\hud-2
 |---|---|
 | 0 | 成功 |
 | 2 | 参数错误 |
-| 3 | 设施失败（诊断带阶段标签：能力探测 / scene 装配 / 帧推进 / 像素读回 / PNG 编码） |
+| 3 | 设施失败（诊断带阶段标签：能力探测 / scene 装配 / 帧推进 / 像素读回 / PNG 编码）。未捕获的未预期错误也归此码，诊断行是 `UNEXPECTED-ERROR` + 完整栈、**不带**阶段标签 |
 | 4 | 像素自检未通过，或批量中存在失败档位 |
 | 5 | **运行环境不具备**出图能力（natives 加载失败 / AWT 无窗口句柄能力 / GL 上下文建不起来）。诊断里带 `ENV-UNAVAILABLE` 行；处置是换 JDK 或加 Xvfb，不是查 UI |
+| 6 | **当前类路径缺少请求所需的类型**（通常是启动器选错）。诊断里带 `CLASSPATH-INSUFFICIENT` 行与缺失类型名；处置是换 `qz-shot-full.bat`（Linux/macOS 为 `.sh`），不是查 UI 也不是换机器 |
 
-契约只覆盖 0/2/3/4/5。**用错启动器**（如用最小集跑 `chat` / `hud`）会得到未捕获的
-`NoClassDefFoundError: net/minecraft/...` 与**退出码 1**——那不在契约内，处置是换 `qz-shot-full.bat`
-（把未捕获 `Error` 纳入契约已登记为未做项，见规划 F38）。
+三种「没出成图」的处置互不相同，故各自独立成码：**3** 查设施 / UI，**5** 换运行环境，
+**6** 换启动器。**用错启动器**（如用最小集跑 `chat` / `hud`）现在报 **6**：
 
-3 与 5 都是「没出成图」，但处置相反：3 要查设施 / UI，5 是这台机器没能力出图。
-测试侧据此分流（`HeadlessShotGate`）——5 跳过、3 / 4 红，不解析消息文本。
+```
+[headless] CLASSPATH-INSUFFICIENT：当前类路径缺少类型 net.minecraft.util.IChatComponent
+[headless] 处置：若该页面触及 Minecraft 类型（chat / hud），换用完整开发类路径启动器 build\headless\qz-shot-full.bat…
+```
+
+（6 之前是未捕获的 `NoClassDefFoundError` 冒泡 ⇒ 退出码 1，不在契约内；2026-09-18 由进程边界兜底收口，见规划 F39。
+**逐档独立进程**批量下报 6 会**就地终止**并写明「后续档未执行」（类路径缺件换档不会变好）；
+**同进程批量**（`--share-context`）则在装配处直接终止、不打印汇总行 —— 两者都只在契约内报了码。）
+
+测试侧据此分流（`HeadlessShotGate`）：5 跳过，3 / 4 / 6 红。唯一例外是**类路径契约判据**本身
+（`missingMinecraftDependencyReportsContractExitCode`）—— 它按设计就用最小集跑 `chat`，并把 6 断言为**正确**结果。
 
 ## 排查
 
