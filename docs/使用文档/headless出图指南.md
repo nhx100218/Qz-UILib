@@ -178,6 +178,24 @@ build\headless\qz-shot.bat --page=playground --actions="move 315 88; frame; clic
 （脚本真的派发、点击真的改变画面）与 `findAddressResolvesToTheSameCenterAndOutOfRangeFails`
 （`--find` 的地址与 `--center` 解出的中心点必须逐字一致）。
 
+
+**查询框吃输入脚本**（F45）：点一下查询框再键入即可驱动过滤，与 `--page-index=1` 的演示态同源
+（装配层订阅查询变更重算候选）。实测（最小集，配合 `--nodes` 读 `Search results (N)`）：
+
+| 脚本 | 结果数 |
+|---|---|
+| 无 | 24 |
+| `--actions="move 446 138; frame; click; frame; type stone; wait 12"` | 5 |
+| `compose stone` | 5 |
+| `type zzzz` | 0 |
+| `type stone` + `key BACKSPACE`×5 | 24 |
+
+门禁：`HeadlessPageLinkageTest.pickerQueryInputFiltersResults` 与 `keyStatementEditsTheQuery`。
+
+**滚轮方向**：`scroll` 的**负 wheelDelta 才是「内容向下滚」**（内容上移），config 页实测 `scroll -5`
+让内容区节点 y 位移 5px（出图 80361 → 80802 B）；`scroll 10`（内容已在顶部）不产生位移 —— 别把
+「正向无效」当成「语句无效」（规划 F45 记录了这条被独立审核推翻的误判）。
+
 ## 环境矩阵（外观 × 玻璃档 × 字号 × 分辨率 × 诊断）
 
 出图的观感不只由页面决定，也由**环境事实**决定。请求可声明五类环境量，与尺寸一样按档位扫：

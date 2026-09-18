@@ -100,17 +100,10 @@ final class PickerProbeHost extends AbstractSceneHostWidget {
      * @param stateIndex 0 = 全部候选 / 1 = 过滤态 / 2 = 空结果态；越界按 0 处理
      */
     public void showState(int stateIndex) {
-        if (stateIndex == 1) {
-            querySignal.set(FILTER_QUERY);
-            resultsSignal.set(filteredCandidates(FILTER_QUERY));
-        } else if (stateIndex == 2) {
-            querySignal.set(EMPTY_QUERY);
-            resultsSignal.set(new SearchPickerData.SearchResult(
-                    Collections.<SearchPickerData.Candidate>emptyList()));
-        } else {
-            querySignal.set("");
-            resultsSignal.set(allCandidates());
-        }
+        // 三个状态的差别只在**查询串**：候选由「查询变更 → 重算」那条绑定统一算（见 mountPanel）。
+        // 曾经的实现直接写 resultsSignal，于是「输入脚本键入查询」与「切演示态」是两条路，
+        // 前者不会过滤（实测 --actions="… type stone …" 只改文本、结果仍 24 条）。
+        querySignal.set(stateIndex == 1 ? FILTER_QUERY : stateIndex == 2 ? EMPTY_QUERY : "");
     }
 
     /** 主题接线 + 建树（同 {@code GlassLabHost} 口径：主题先于建树安装，建树包进 root 作用域）。 */
@@ -150,6 +143,11 @@ final class PickerProbeHost extends AbstractSceneHostWidget {
                 .build();
         // create 内部把面板挂到 runtime 的 overlay 栈（居中 70% portal），故此处不再手动 mount；
         // 状态由 showState 经 query/results/open 信号驱动，不依赖命中坐标。
+        // 装配层职责：查询变更 ⇒ 重算候选（面板只渲染结果信号，不自行查询 —— 与真机
+        // 「装配层持候选、面板只渲染」的分工一致）。输入脚本键入的查询走的就是这条绑定，
+        // 与 --page-index=1 的演示态同源；少了它，键入只改查询文本、候选集不动。
+        runtime.bind(querySignal, query -> resultsSignal.set(
+                query == null || query.isEmpty() ? allCandidates() : filteredCandidates(query)));
         ScenePickerPanel.create(runtime, props);
     }
 

@@ -1585,6 +1585,65 @@ hud 40 B；solid 少 17.8% / 16.7%）；② 按建议给 `build.gradle.kts` 的 
 事实表格式未单独钉（已有 `--find` 的地址一致性作间接覆盖）；交互覆盖只有 playground 导航一次点击，
 chat / picker 的输入脚本未覆盖。
 
+### F45 picker 查询输入闭环：`type` / `compose` / `key` 首次驱动过滤（2026-09-18）
+
+**动机（能力缺口 + 输入语句零覆盖）**：设备模型的 `type` 与 `key` 语句在测试里从未被验证过
+（`compose` 只有设备层单条判据 `HeadlessInputDeviceTest.composeDeliversWholeTextInOneFrame`，没有
+「输入 → 状态变化」的端到端覆盖；F44 只钉了 `move` / `click`）。picker 页的查询框是「文本输入 → 状态变化」的天然工况 ——
+实测却发现**输入进去了但不生效**：查询框节点文本确实变成 `stone`（`--nodes` 可读），候选集却恒为 24 条。
+
+**根因**：`PickerProbeHost` 有 `filteredCandidates(query)` 与查询回写（面板 `Props.onQuery`），但**没有订阅
+查询变更** —— `--page-index=1` 的过滤态是手动同时写 `query` 与 `results` 两个信号绕出来的，于是
+「输入脚本键入」与「切演示态」是两条路，前者不重算候选。修法：装配期加一条绑定（查询变更 ⇒ 重算候选），
+`showState` 收缩为只设查询串 —— 与真机「装配层持候选、面板只渲染」的分工一致，不是新增第二套接线。
+
+**实测（picker 页，最小集，用 `--nodes` 读节点事实表的 `Search results (N)`）**：
+
+| 脚本 | 结果数 |
+|---|---|
+| 无（基线） | 24 |
+| `--actions="move 446 138; frame; click; frame; type stone; wait 12"` | **5** |
+| `compose stone`（整串提交，前缀同上） | **5** |
+| `type zzzz`（无命中） | **0** |
+| `type stone` + `key BACKSPACE`×5 | **24**（逐字符编辑回全量） |
+
+**门禁（三条）**：`pickerQueryInputFiltersResults`（基线 24 → `type stone` 5 → `compose stone` 5 →
+`type zzzz` 0 → **`type glass_` 1**）、`keyStatementEditsTheQuery`（`type stone` + 5 次退格回到 24）、
+`scrollStatementMovesContent`（`scroll -5` 让内容区节点上移 5px；主证据取 `--nodes` 的 y 位移而非像素哈希）。
+`glass_` 那条是**审核指出的盲区补丁**：只断言 `stone`=5 时，「type 少派发末尾 1~3 字符」会伪装通过
+（`st`/`sto`/`ston` 都是 5 条），而 `glass_`=1 / `glass`=2 能把它区分开。变异（各自独立脚本 +
+try/finally + 还原逐字节校验）：① 断开查询绑定 ⇒ 判据 1 红；② `key` 不派发 ⇒ 判据 2 红；
+③ `scroll` 不派发 ⇒ 判据 3 红；④ `type` 少派发末尾字符 ⇒ 判据 1 红（补 `glass_` 前该变异**存活**）。
+
+**过程中的坑（如实记录）**：改完 `PickerProbeHost` 后直接跑 `qz-shot.bat` 观察 —— **没有任何变化**，
+因为出图启动器用的是 `build/classes` 里的旧类、不会自动编译（F42 已记过同一条坑，本轮又踩一次）；
+`gradlew compileJava` 之后 24 → 5 立刻出现。
+
+**一次被审核推翻的「负面实测」（如实记录全过程）**：本轮一度登记「`scroll` 在 config 页不产生任何
+像素变化」，依据是几组对照（含 `scroll -5 @700,200`）出图**同哈希**。独立审核按最小复现复核后**推翻**：
+同一工况下 `scroll -5` 出图 80802 B（对照 80361 B），`--nodes` 里内容区节点 y **位移 5px**；Lead 复核一致
+（`scroll -5 @700,350`：80802 B / `0d2dd12b…`；@700,200：80810 B / `7b221e0a…`；内容区
+`r0/0/2/1/0/0/0/1/0/2` 的 y 205 → 200）。真相是**方向语义**：负 wheelDelta（内容向下滚）才有效，
+`scroll 10`（内容已在顶部）不产生位移 —— 把「正向无效」读成「语句无效」是错的。
+教训：**否定性结论必须换工况/换方向复现**，单点同哈希不足以判定「无效果」。
+
+**边界（如实登记）**：`dblclick` / `down` / `up` / `cancel` 仍未覆盖；picker 的成员带 / 候选源 SPI /
+分类导航 / 密度档仍未覆盖（F41 登记）；`--script=file` 仍只由 `--actions` 间接代表（F44 登记）。
+**独立审核与处置（零上下文子代理，2026-09-18）**：总判**有条件通过**。它独立复核了改动集（本轮 4 文件；
+并正确排除了他人正在改的 `docs/开发者文档/规格文档/` 下文件）、两条判据真执行（JUnit `tests=2 skipped=0`）、
+数字反例（逐个前缀验算匹配数）与三条变异，并**推翻**了本轮的「scroll 无效果」结论（见上）。
+4 条【应当修】全部处置：
+
+1. 「scroll 无效果」段与指南「实测提示」段失实 ⇒ 订正为方向语义，并保留误判过程作为教训；
+2. 「`type`/`compose`/`key` 零覆盖」措辞夸大 ⇒ 改为「`type`/`key` 零覆盖；`compose` 仅有设备层判据」；
+3. 「不给 `scroll` 写判据」的理由不成立 ⇒ 补 `scrollStatementMovesContent`（主证据用节点 y 位移）；
+4. 判据 1 的「末尾字符丢失」盲区 ⇒ 补 `type glass_` → 1 的前缀敏感断言（该变异从「存活」变「红」）。
+
+它另有 3 条【建议】本轮采纳 1 条（滚动判据用 `--nodes` 位移做主证据），其余 2 条登记
+（`--nodes` 与 `--out` 同用 exit=2 的文档说明、`EMPTY_QUERY` 的前提注释）。
+**它报告的一处本轮外既有缺陷（本轮未改，登记为下一轮候选）**：`HeadlessInputDevice` 的
+`press` / `release` / `scroll` / `cancelPointer` 调 `ofPointer` 时把 `(shiftDown, controlDown)` 传进了
+`(controlDown, shiftDown)` 的参数位（`moveTo` / `keyDown` 顺序正确）⇒ 带修饰键时 control / shift 互换。
 ## 三、目标形态
 
 **四件套 + 一个出口：**

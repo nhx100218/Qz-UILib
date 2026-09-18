@@ -8,7 +8,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
+import java.util.Map;
 import java.util.List;
 import java.util.Set;
 import java.util.regex.Matcher;
@@ -57,6 +59,8 @@ public class HeadlessPageLinkageTest {
     private static final Pattern COLORS = Pattern.compile("colors=(\\d+)");
     private static final Pattern SEGMENTS = Pattern.compile("segments=(\\d+)");
     private static final Pattern DISPATCHED = Pattern.compile("dispatched=(\\d+)");
+    private static final Pattern SEARCH_RESULTS = Pattern.compile("Search results \\((\\d+)\\)");
+    private static final Pattern NODE_LINE = Pattern.compile("(r[0-9/]+) SceneNode(?: \"[^\"]*\")? @\\d+,(-?\\d+)");
     private static final String TEMP_DIR_PREFIX = "qz-headless-config-";
 
     /** 配置页在最小集上必须真的出图（本轮回归的守卫）。 */
@@ -360,6 +364,81 @@ public class HeadlessPageLinkageTest {
     }
 
     /**
+     * picker 的查询框必须吃输入脚本：{@code type}（逐字符）与 {@code compose}（整串提交）都要真的过滤候选。
+     *
+     * <p>它守的是一条真实缺口：探针宿主此前<b>没有</b>订阅查询变更 —— {@code --page-index=1} 的过滤态是
+     * 手动同时写 {@code query} 与 {@code results} 两个信号绕出来的，而输入脚本键入的查询只改面板文本、
+     * 候选集不动（实测键入 `stone` 后仍是 24 条）。修法是把「查询变更 ⇒ 重算候选」接回装配层
+     * （与真机「装配层持候选、面板只渲染」的分工一致），此后两条路径同源。</p>
+     */
+    @Test
+    public void pickerQueryInputFiltersResults() throws Exception {
+        String base = renderQuery("linkage-picker-input-base", "--page=picker", "--nodes");
+        Assert.assertEquals("基线候选数：\n" + base, 24, searchResultsOf(base));
+
+        String typed = renderQuery("linkage-picker-input-type", "--page=picker", "--nodes",
+                "--actions=move 446 138; frame; click; frame; type stone; wait 12");
+        Assert.assertEquals("type 必须真的过滤候选（24 → 5）：\n" + typed, 5, searchResultsOf(typed));
+
+        String composed = renderQuery("linkage-picker-input-compose", "--page=picker", "--nodes",
+                "--actions=move 446 138; frame; click; frame; compose stone; wait 12");
+        Assert.assertEquals("compose（整串提交）必须与 type 同结果：\n" + composed, 5,
+                searchResultsOf(composed));
+
+        String noMatch = renderQuery("linkage-picker-input-nomatch", "--page=picker", "--nodes",
+                "--actions=move 446 138; frame; click; frame; type zzzz; wait 12");
+        Assert.assertEquals("无命中查询必须落到空态（0 条）：\n" + noMatch, 0, searchResultsOf(noMatch));
+
+        // 前缀敏感用例：glass_ 只命中 glass_pane（1），而它的真前缀 glass 命中 2 ——
+        // 少了这条，「type 少派发末尾字符」会伪装成通过（独立审核实测变异存活：ston 与 stone 同为 5）。
+        String prefixSensitive = renderQuery("linkage-picker-input-prefix", "--page=picker", "--nodes",
+                "--actions=move 446 138; frame; click; frame; type glass_; wait 12");
+        Assert.assertEquals("查询 glass_ 必须只命中 glass_pane（少派发末尾字符会退化成 glass=2）：\n"
+                + prefixSensitive, 1, searchResultsOf(prefixSensitive));
+    }
+
+    /**
+     * 键盘编辑路径（{@code key BACKSPACE}）必须真的改查询：键入 `stone` 后五次退格回到全量。
+     *
+     * <p>它与 {@link #pickerQueryInputFiltersResults()} 合起来覆盖「键入 → 编辑 → 结果」整条链；
+     * 只钉键入的话，退格不生效（或退格只动光标不动查询）不会有任何判据变红。</p>
+     */
+    @Test
+    public void keyStatementEditsTheQuery() throws Exception {
+        String output = renderQuery("linkage-picker-key", "--page=picker", "--nodes",
+                "--actions=move 446 138; frame; click; frame; type stone; wait 6;"
+                        + " key BACKSPACE; key BACKSPACE; key BACKSPACE; key BACKSPACE; key BACKSPACE; wait 12");
+        Assert.assertEquals("退格必须逐字符缩短查询（stone → 空 ⇒ 回到 24 条）：\n" + output,
+                24, searchResultsOf(output));
+    }
+
+    /**
+     * 滚轮语句必须真的滚内容：config 页内容高于视口，**负 wheelDelta**（向下滚内容）应让内容区节点上移。
+     *
+     * <p>主证据取 {@code --nodes} 投影里的节点 y 位移，而不是像素哈希 —— 位移量是滚动的直接语义，
+     * 跨 GL 后端稳定（独立审核建议）。注意方向语义：{@code scroll 10}（内容已在顶部）不产生位移，
+     * 早期把「正向无效」误记成「语句无效」是错的（同一份记录里 {@code scroll -5} 实测位移 5px）。</p>
+     */
+    @Test
+    public void scrollStatementMovesContent() throws Exception {
+        String before = renderQuery("linkage-scroll-before", "--page=config", "--nodes",
+                "--actions=move 700 350; frame; wait 11");
+        String after = renderQuery("linkage-scroll-after", "--page=config", "--nodes",
+                "--actions=move 700 350; frame; scroll -5; wait 10");
+        Map<String, Integer> beforeYs = nodeYs(before);
+        Map<String, Integer> afterYs = nodeYs(after);
+        int moved = 0;
+        for (Map.Entry<String, Integer> entry : beforeYs.entrySet()) {
+            Integer now = afterYs.get(entry.getKey());
+            if (now != null && entry.getValue().intValue() - now.intValue() == 5) {
+                moved++;
+            }
+        }
+        Assert.assertTrue("负 wheelDelta 必须让内容上移 5px（实测位移节点数 " + moved + "）：\n" + after,
+                moved > 0);
+    }
+
+    /**
      * 查询路径必须**不产出 PNG**：它们只推进若干帧拿布局再投影，产物集合属于出图请求。
      *
      * <p>缺这条判据时，把查询路径改成顺手写一张图不会有任何测试变红（它自己的契约无人守），
@@ -566,6 +645,22 @@ public class HeadlessPageLinkageTest {
     /** 从输出里取命令面摘要的段流条数；没有该行返回 -1。 */
     private static int segmentsOf(String output) {
         Matcher matcher = SEGMENTS.matcher(output);
+        return matcher.find() ? Integer.parseInt(matcher.group(1)) : -1;
+    }
+
+    /** 节点事实表里的「地址 → 绝对 y」（同一地址只出现一次）。 */
+    private static Map<String, Integer> nodeYs(String output) {
+        Map<String, Integer> ys = new LinkedHashMap<String, Integer>();
+        Matcher matcher = NODE_LINE.matcher(output);
+        while (matcher.find()) {
+            ys.put(matcher.group(1), Integer.valueOf(matcher.group(2)));
+        }
+        return ys;
+    }
+
+    /** 从输出里取 picker 结果条数（节点事实表里的 "Search results (N)"）；没有该行返回 -1。 */
+    private static int searchResultsOf(String output) {
+        Matcher matcher = SEARCH_RESULTS.matcher(output);
         return matcher.find() ? Integer.parseInt(matcher.group(1)) : -1;
     }
 
