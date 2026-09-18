@@ -1675,6 +1675,57 @@ try/finally + 还原逐字节校验）：① 断开查询绑定 ⇒ 判据 1 红
 `altDown` / `metaDown` 顺序已核对一致且本轮补了断言；`dblclick` / `down` / `up` / `cancel` 语句的
 **页面级**行为仍未覆盖（F45 登记）。
 
+### F47 出图确定性缺口：帧时钟虚拟化（2026-09-18，已修）
+
+**怎么发现的**：本轮想把 F46 的修饰键判据做成端到端**等价物对拍**（Shift+点击 ≡ 拖拽到同一点），
+按等价关系设计判据时发现同一命令连跑多次产物不同 ⇒ 逐字节对拍不成立。
+
+**量化（`--page=playground --page-index=1` + 固定脚本，修复前）**：
+
+| 参数 | 次数 | 产物种数 | 帧数读数 |
+|---|---|---|---|
+| 默认（`--settle=2`） | 8 | **4**（`eedeafb6…`×3 / `2aa96ac3…`×3 / `7121fc89…`×1 / `c8f5fa9a…`×1） | 13 / 14 / 15 |
+| `--settle=20 --max-frames=200` | 6 | **3**（`2aa96ac3…`×4 / `264f0beb…` / `ceea3fee…`） | 31 / 32 / 33 |
+| 无输入脚本（对照） | 6 | 1（哈希稳定） | **仍抖：8 / 9** |
+
+**差异的精确范围**：逐像素差分显示两种主要产物恒差 **16 像素**，位于 `x=359, y=172..187`（1×16 竖线）；
+取值是一族**连续的 alpha 相位**（满色 `ffd0bcff` ↔ 该列背景渐变之间，实测 t≈0.478 / 0.527 / 0.575 / 0.677），
+**不是「三态」**；命令面差 1 条（`commands=55 fill=1` vs `54 fill=0`）。同一批运行里输入读数完全一致
+（`dispatched=6 pending=0 pointer=500,180`）⇒ 抖的是**渲染态**。
+
+**根因**：`AbstractSceneHostWidget.render` 每帧取 `System.nanoTime()`（真实单调时钟）交给
+`runtime.__tickFrame(...)` 驱动动画与 caret 派生；headless 帧循环（`HeadlessSession.capture`）按
+「像素指纹连续 `--settle` 帧一致」收敛。两者互相影响：相位随机器负载漂、收敛判定又踩在相位上
+⇒ 停止帧与 caret 透明度都不固定。**加大 settle 不能消除**（不是「没来得及收敛」，而是相位本身不确定）。
+
+**修法（本轮落地）**：把帧时间改成 **runtime 端口** —— `SceneRuntime.__useVirtualFrameClock(baseNanos,
+stepNanos)` + `__nextFrameTimeNanos()`（默认仍 `System.nanoTime()`，**真机行为不变**）；
+`AbstractSceneHostWidget.render` 改为向 runtime 取时间；`HeadlessSession.applyEnvironment` 注入
+「`--clock` 基准 + 帧序号 × 16 ms」（与 `ChatSceneProbeHost` / `HudSceneProbeHost` 消息时间戳的 16 ms
+步长同源）。
+
+**验收（一手实测）**：带脚本产物 **8/8 同一哈希**（帧数恒 17）—— 修复前是 8 次 4 种；
+无脚本 playground#1 仍 `ac1278c026cf…`（**与修复前逐字节相同**，锚点不动）；config / picker / glass /
+playground#8 无脚本出图正常。
+
+**门禁**：`HeadlessPageLinkageTest.scriptedShotIsByteIdenticalAcrossRuns`（带脚本连跑**五次**逐字节相同）
+与 `scriptFreeShotIsByteIdenticalAcrossRuns`（无脚本连跑三次）。采样次数是算过的：修复前分布最大占比
+3/8，三次采样漏检率约 11%（本轮做变异时**实测漏检过一次**），五次压到约 1.5%。变异（各自独立脚本 +
+try/finally + 还原逐字节校验）：① 撤销宿主端口（回到 `System.nanoTime()`）⇒ 红；② 去掉 headless 注入 ⇒ 红。
+
+**审核用变异推翻过本轮的「不修」结论（如实记录）**：第一版本轮把它登记为「不修」，理由写的是「改生产宿主
+基类会让既有各轮的字节数锚点全部失效」；独立审核用两组变异证明该代价被高估 —— 帧序号 × 16 ms 的虚拟时钟下
+**8/8 个页面无脚本哈希一字不变**、`HeadlessPageLinkageTest` 21/21 全绿。本轮据此改为落地修复，
+实测复核（无脚本 `ac1278c026cf…` 不变）与审核结论一致。
+
+**残留边界（如实登记）**：
+1. **`frames` 读数抖动**：无脚本 playground 曾 8/9、`--settle=20` 下 31/32、picker 15/16（**产物相同**）。
+   它不是「输入脚本路径特有」，任何把帧数写进锚点的判据都会 flaky ⇒ 判据只对拍产物摘要，不对拍帧数；
+2. 判据靠**多次采样**发现不确定性，不是确定性证明（五次采样对修复前分布约 98.5% 检出）；
+3. 宽度缓存预算回归（文档记录过的那条）在本判据下检出率偏低（审核实测 JDK17 分布 1:11）—— 那条回归的
+   哨兵仍是文档里的剂量对照口径，不是本判据；
+4. chat / hud 在其它输入路径下的确定性**未测**。
+
 ## 三、目标形态
 
 **四件套 + 一个出口：**

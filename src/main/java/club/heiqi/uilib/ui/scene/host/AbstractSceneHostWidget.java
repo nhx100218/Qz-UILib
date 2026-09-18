@@ -166,9 +166,11 @@ public abstract class AbstractSceneHostWidget implements UiSurface {
         monitor.beginFrame(hostLabel, Math.max(0, w), Math.max(0, h), Math.max(0, w), Math.max(0, h),
                 runtime.environment().diagnostics());
         try {
-            // host 每帧只采一次单调时间，帧率探针与 Motion 共用同一个 timestamp；
+            // host 每帧只采一次时间戳，帧率探针与 Motion 共用同一个 timestamp；
             // tick 保留在宿主（子类覆写 render 不调 super 则 tick 不执行——子类责任，基类尽力默认采集）。
-            long frameTimeNanos = System.nanoTime();
+            // 时间源经 runtime 端口取（规划 F47）：默认真实单调时钟，headless 会话注入虚拟帧时钟
+            // ⇒ 动画相位不再随机器负载漂，出图可逐字节复现。
+            long frameTimeNanos = runtime.__nextFrameTimeNanos();
             frameProbe.tick(frameTimeNanos);
             runtime.__tickFrame(frameTimeNanos);
             w = Math.max(0, w);

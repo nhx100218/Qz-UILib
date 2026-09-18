@@ -163,7 +163,14 @@ public final class HeadlessSession implements AutoCloseable {
      * @param binding 装配结果
      * @param request 请求
      */
+    /** 虚拟帧时钟步长（纳秒）：与消息时间戳的 16 ms 步长同源（规划 F47）。 */
+    private static final long FRAME_STEP_NANOS = 16_000_000L;
+
     private static void applyEnvironment(HostBinding binding, HeadlessRequest request) {
+        // 帧时钟虚拟化（规划 F47）：动画 / caret 相位不再随机器负载漂 —— 帧时间 = --clock 基准 +
+        // 帧序号 × 16 ms，与消息时间戳（ChatSceneProbeHost / HudSceneProbeHost 的 clockMillis += 16）
+        // 同源。没有这一步，同一命令连跑会得到多种产物（实测 8 次 4 种，差异是 caret 竖线的相位族）。
+        binding.runtime().__useVirtualFrameClock(request.clockMillis() * 1_000_000L, FRAME_STEP_NANOS);
         if (request.backdropQuality() != null) {
             // 玻璃档位是渲染热路径的直读量（BackdropQualityService.current()），装配期写入即本档全部帧一致。
             // 走 applyConfigured 而非直接写字段：它是进程级唯一写入口（含非法值告警与同值幂等短路）。

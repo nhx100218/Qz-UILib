@@ -439,6 +439,48 @@ public class HeadlessPageLinkageTest {
     }
 
     /**
+     * 出图必须逐字节确定（同一命令连跑三次）—— 设施的核心契约。
+     *
+     * <p>连跑**三次**而不是两次：独立审核用「宽度缓存预算改回 64」这一真实回归做剂量对照，
+     * 测得基线在 24 次里只出现 9/9/2/4（基线值占比约 37%），两次采样的理论检出率偏低、三次更稳。</p>
+     *
+     * <p>帧时钟虚拟化（规划 F47）之前，这条判据只能覆盖「无输入脚本」的工况：带输入脚本时
+     * 帧时间取 {@code System.nanoTime()}（真实耗时），动画 / caret 相位随机器负载漂，同一命令
+     * 连跑 8 次得 4 种产物（差异是 16 px 的 caret 竖线相位族）。F47 把帧时间改成 runtime 端口后，
+     * 带脚本工况也确定了 —— 见 {@link #scriptedShotIsByteIdenticalAcrossRuns()}。</p>
+     */
+    @Test
+    public void scriptFreeShotIsByteIdenticalAcrossRuns() throws Exception {
+        String first = renderDigest("linkage-determinism-a", "--page=playground", "--page-index=1");
+        String second = renderDigest("linkage-determinism-b", "--page=playground", "--page-index=1");
+        String third = renderDigest("linkage-determinism-c", "--page=playground", "--page-index=1");
+        Assert.assertEquals("无脚本：连跑三次必须逐字节相同（第二 vs 第三）：", second, third);
+        Assert.assertEquals("无脚本：连跑三次必须逐字节相同（第一 vs 第二）：", first, second);
+    }
+
+    /**
+     * **带输入脚本**的出图同样必须逐字节确定 —— 这是 F47 帧时钟虚拟化的直接成果。
+     *
+     * <p>脚本驱动到焦点 / 插入符动画：修复前同一命令连跑 8 次得 4 种产物（差异恒为
+     * {@code x=359, y=172..187} 的 16 px caret 竖线，值域是一族连续的 alpha 相位）；修复后
+     * （{@code SceneRuntime.__useVirtualFrameClock}，headless 注入「{@code --clock} 基准 + 帧序号 × 16 ms」）
+     * 实测 8/8 同一哈希。判据连跑三次钉住它 —— 插入符相位一旦重新回到真实时钟就会红。</p>
+     */
+    @Test
+    public void scriptedShotIsByteIdenticalAcrossRuns() throws Exception {
+        String actions = "--actions=move 300 180; frame; down; frame; up; frame; move 500 180;"
+                + " frame; down; frame; up; wait 6";
+        // 连跑五次而不是三次：修复前的产物分布是「多种相位」（实测 8 次 4 种，最大占比 3/8），
+        // 三次采样仍有约 11% 的漏检率（本轮用它做变异时实测漏检过一次），五次把漏检压到约 1.5%。
+        String reference = renderDigest("linkage-scripted-0", "--page=playground", "--page-index=1", actions);
+        for (int run = 1; run <= 4; run++) {
+            Assert.assertEquals("带脚本：连跑五次必须逐字节相同（第 " + run + " 次 vs 第 0 次）：",
+                    reference, renderDigest("linkage-scripted-" + run, "--page=playground",
+                            "--page-index=1", actions));
+        }
+    }
+
+    /**
      * 查询路径必须**不产出 PNG**：它们只推进若干帧拿布局再投影，产物集合属于出图请求。
      *
      * <p>缺这条判据时，把查询路径改成顺手写一张图不会有任何测试变红（它自己的契约无人守），
@@ -646,6 +688,17 @@ public class HeadlessPageLinkageTest {
     private static int segmentsOf(String output) {
         Matcher matcher = SEGMENTS.matcher(output);
         return matcher.find() ? Integer.parseInt(matcher.group(1)) : -1;
+    }
+
+    /** 直启一次出图并返回**产物内容摘要**（单档时即该 PNG 的前 8 字节 sha256）。 */
+    private static String renderDigest(String name, String... extraArgs) throws Exception {
+        Shot shot = runShot(name, extraArgs);
+        HeadlessShotGate.assumeEnvironmentAvailable(name, shot.exit, shot.output);
+        Assert.assertEquals("headless 直启失败（" + name + " exit=" + shot.exit + "）：\n" + shot.output,
+                0, shot.exit);
+        Set<String> digests = digestsOf(sameStem(shot.outputPath));
+        Assert.assertEquals("单档出图应恰好一个产物：\n" + shot.output, 1, digests.size());
+        return digests.iterator().next();
     }
 
     /** 节点事实表里的「地址 → 绝对 y」（同一地址只出现一次）。 */

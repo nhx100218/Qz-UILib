@@ -905,6 +905,42 @@ public class SceneRuntime implements SceneFontEnvironment {
     /** 帧时间 signal：宿主每帧经 {@link #__tickFrame(long)} 更新（caret 闪烁等按帧时间驱动的 UI 消费） */
     private final Signal<Long> frameTimeSignal = Signal.create(Long.valueOf(0L));
 
+    /** 虚拟帧时钟步长（规划 F47）：{@code <= 0} = 真实单调时钟（默认；真机与既有行为不变）。 */
+    private long virtualFrameStepNanos;
+    /** 虚拟帧时钟基准：第一帧时间戳（纳秒）。 */
+    private long virtualFrameBaseNanos;
+    /** 虚拟帧时钟已发出的帧序号。 */
+    private long virtualFrameIndex;
+
+    /**
+     * 注入虚拟帧时钟：此后 {@link #__nextFrameTimeNanos()} 返回「基准 + 帧序号 × 步长」。
+     *
+     * <p><b>为什么需要它</b>：宿主每帧取一次时间戳驱动动画（{@code Motion}、caret 派生），真实时钟让
+     * 同一命令的动画相位随机器负载漂 —— headless 出图的「产物是请求的函数」随之失效（规划 F47 实测：
+     * 同一命令连跑 8 次得 4 种产物，差异是 16 px 的 caret 竖线相位族；加大 settle 不能消除）。
+     * 注入虚拟时钟后帧时间与 {@code --clock} 基准同源，页面动画可逐字节复现。</p>
+     *
+     * @param baseNanos 第一帧时间戳（纳秒；headless 传 {@code --clock} 基准）
+     * @param stepNanos 每帧步长（纳秒；{@code <= 0} = 回到真实时钟）
+     */
+    public void __useVirtualFrameClock(long baseNanos, long stepNanos) {
+        virtualFrameBaseNanos = baseNanos;
+        virtualFrameStepNanos = stepNanos;
+        virtualFrameIndex = 0L;
+    }
+
+    /**
+     * 取本帧时间戳（宿主每帧取一次，随后交给 {@link #__tickFrame(long)}）。
+     *
+     * @return 本帧时间戳（纳秒）：未注入虚拟时钟时即 {@code System.nanoTime()}
+     */
+    public long __nextFrameTimeNanos() {
+        if (virtualFrameStepNanos <= 0L) {
+            return System.nanoTime();
+        }
+        return virtualFrameBaseNanos + (virtualFrameIndex++) * virtualFrameStepNanos;
+    }
+
     /**
      * 宿主帧入口通知：更新帧时间（内部桥，双下划线不作为公共 API 承诺）。
      *
