@@ -43,7 +43,7 @@
 - **⚠️ 公开但不稳定**（新面观察期，对外可见但不承诺稳定）：
   - `ui.env` 端口族（`UiEnvironment` / `DiagnosticsEnvironment` / `LocaleEnvironment` / `ResourceEnvironment` / `ProcessUiEnvironment`）：宿主→框架的**只读环境事实注入面**，代际读取点已全部改走端口，但注入语义（缺席实现、代际比对、安装时机）尚未经一个发布周期观察——同 `FormThemes` 先例先标 ⚠️，稳定后转 ✅。
   - `ui.scene.host.SceneHostWindow`：由业务侧上提的公共宿主窗口（headless HUD 页与业务页共用同一窗口），签名已收敛但仍属新公共宿主族，同样先观察一个发布周期。
-- **🔒 内部**（不列公共面）：`internal.devtools.headless.*`（headless 出图设施；`verifyHeadlessNotPackaged` 门禁保证不进发布 jar）、`client.AngelicaHudCachingSuppressor`（宿主兼容抑制器，随宿主版本演进）。
+- **🔒 内部**（不列公共面）：`internal.devtools.*`（内部开发工具**整包**：headless 出图、scene 测试场地、磨玻璃实验室、网络自检端点与开发环境完整命令；`verifyDevToolsNotPackaged` 门禁保证不进发布 jar。发布产物内保留的 `/qzuilib` 玩家通道在 `client.command`）、`client.AngelicaHudCachingSuppressor`（宿主兼容抑制器，随宿主版本演进）。
 
 ## 稳定 API 面（按子系统）
 

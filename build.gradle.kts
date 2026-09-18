@@ -29,29 +29,34 @@ tasks.withType<Test>().configureEach {
 }
 
 // ============================================================================
-// headless 设施（main 域 club.heiqi.uilib.internal.devtools.headless）
-// 定位与顶层语义见 docs/历史报告/规划与设计/规划-headless运行时与验收设施.md；
-// 硬约束（2026-09-17 用户裁定）：不影响打包体积——类只存在于 build/classes，不进入任何产物。
+// 内部开发工具（main 域 club.heiqi.uilib.internal.devtools）
+// 含 headless 出图、scene 测试场地（playground）、磨玻璃实验室（glass）、网络自检端点
+// （NetSelfCheck* / NetRuntimeSelfChecks）与开发环境完整命令（QzUiLibClientCommand /
+// DevToolsClientBootstrap）。定位与顶层语义见
+// docs/历史报告/规划与设计/规划-headless运行时与验收设施.md；
+// 硬约束（2026-09-17 用户裁定，2026-09-18 扩到整包）：不影响打包体积——类只存在于
+// build/classes，不进入任何产物。发布产物内保留的 /qzuilib 通道命令在 client.command，
+// 由 ClientProxy 按「开发环境 + 类存在」双重探测择一注册。
 // ============================================================================
-val headlessPackagePath = "club/heiqi/uilib/internal/devtools/headless"
+val internalDevToolsPackagePath = "club/heiqi/uilib/internal/devtools"
 
 // 1) Jar 型产物统一排除（jar / shadowJar / sourcesJar / apiJar）。
 //    reobfJar 是 ReobfuscatedJar（非 Jar 子类、无 exclude），吃的是 dev jar 产物，排除随输入传播——由下面的门禁实测确认。
 tasks.withType<Jar>().configureEach {
-    exclude("$headlessPackagePath/**")
+    exclude("$internalDevToolsPackagePath/**")
 }
 // apiJar 用的是旧类型 org.gradle.jvm.tasks.Jar（不是 bundling.Jar 的子类），必须单独排除——
 // 这一处漏排正是第一次门禁跑出来的真实缺陷（apiJar 里混进了 headless 包）。
 tasks.withType<org.gradle.jvm.tasks.Jar>().configureEach {
-    exclude("$headlessPackagePath/**")
+    exclude("$internalDevToolsPackagePath/**")
 }
 
 // 2) 门禁：逐个打开产物断言不含该包。排除是意图，门禁才是保证；
 //    校验集合按 AbstractArchiveTask 全量枚举 + 显式依赖本仓产物任务，构建链新增打包任务不会静默漏检。
 val guardedArchiveTasks = listOf("jar", "shadowJar", "sourcesJar", "apiJar", "reobfJar")
-val verifyHeadlessNotPackaged by tasks.registering {
+val verifyDevToolsNotPackaged by tasks.registering {
     group = "verification"
-    description = "校验 headless 设施未进入任何打包产物"
+    description = "校验内部开发工具（internal.devtools 整包）未进入任何打包产物"
     dependsOn(guardedArchiveTasks)
     val guarded: List<Provider<RegularFile>> = guardedArchiveTasks.map { name ->
         tasks.named(name, AbstractArchiveTask::class.java).flatMap { task -> task.archiveFile }
@@ -59,12 +64,12 @@ val verifyHeadlessNotPackaged by tasks.registering {
     val allArchives: Provider<List<File>> = provider {
         tasks.withType(AbstractArchiveTask::class.java).toList().map { task -> task.archiveFile.get().asFile }
     }
-    val forbidden = "$headlessPackagePath/"
+    val forbidden = "$internalDevToolsPackagePath/"
     doLast {
         val guardedFiles = guarded.map { archive -> archive.get().asFile }
         val missing = guardedFiles.count { file -> !file.isFile }
         if (missing > 0) {
-            throw GradleException("verifyHeadlessNotPackaged: 有 " + missing + " 个产物未生成，门禁失效")
+            throw GradleException("verifyDevToolsNotPackaged: 有 " + missing + " 个产物未生成，门禁失效")
         }
         val extras = allArchives.get().filter { file -> file.isFile && !guardedFiles.contains(file) }
         (guardedFiles + extras).forEach { file ->
@@ -80,13 +85,13 @@ val verifyHeadlessNotPackaged by tasks.registering {
                 }
             }
             if (hit != null) {
-                throw GradleException("headless 设施进入了打包产物 " + file.name + "：" + hit)
+                throw GradleException("内部开发工具进入了打包产物 " + file.name + "：" + hit)
             }
-            logger.lifecycle("verifyHeadlessNotPackaged: " + file.name + " 不含 " + forbidden)
+            logger.lifecycle("verifyDevToolsNotPackaged: " + file.name + " 不含 " + forbidden)
         }
     }
 }
-tasks.named("check") { dependsOn(verifyHeadlessNotPackaged) }
+tasks.named("check") { dependsOn(verifyDevToolsNotPackaged) }
 
 // ============================================================================
 // 3) headless 运行期供给：LWJGL2 主 jar 与 natives 只在 compileClasspath 上（真机由 MC 客户端供给），

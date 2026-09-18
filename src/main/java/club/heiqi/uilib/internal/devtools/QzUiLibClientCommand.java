@@ -3,9 +3,7 @@ package club.heiqi.uilib.internal.devtools;
 import java.util.Collections;
 import java.util.List;
 
-import club.heiqi.uilib.config.modern.ModernConfigEntry;
-import club.heiqi.uilib.internal.chat3.ChatMarkdownSettings;
-import club.heiqi.uilib.internal.chat3.wiring.ChatMarkdownInstaller;
+import club.heiqi.uilib.client.command.QzUiLibCommandActions;
 import club.heiqi.uilib.internal.devtools.glass.GlassLabEntry;
 import club.heiqi.uilib.internal.devtools.playground.TestPlaygroundEntry;
 import net.minecraft.client.Minecraft;
@@ -15,7 +13,11 @@ import net.minecraft.command.WrongUsageException;
 import net.minecraft.util.ChatComponentText;
 
 /**
- * Qz UILib 内部开发工具客户端命令。
+ * Qz UILib 内部开发工具客户端命令（开发环境完整版）。
+ *
+ * <p>本类随 {@code internal.devtools} 整包排除出发布产物，只在开发环境由
+ * {@code DevToolsClientBootstrap} 经 {@code ClientProxy} 探测装配；发布产物内同名命令为
+ * {@code client.command.QzUiLibClientCommand}，只含玩家可见通道。同一环境只注册其中一个。</p>
  *
  * <p>子命令：</p>
  * <ul>
@@ -159,59 +161,43 @@ final class QzUiLibClientCommand extends CommandBase {
     }
 
     /**
-     * 打开新架构配置页（实验性）。
-     *
-     * <p>uilib 作为新架构配置页的第一个真实使用方，经 {@link ModernConfigEntry} 接入。
-     * 接入代码位于 {@code uilib.config.modern} 专门包，依据决策 {@code ee1e181d}
-     * 可直接 import {@code config.ui.*}（含 ConfigUI.open），不再需要反射。</p>
+     * 打开新架构配置页（实验性）。与发布产物内同名子命令共用
+     * {@link QzUiLibCommandActions#openModernConfig}，避免两处实现漂移。
      *
      * @param sender 命令发送者，用于客户端不可用时提示
      */
     private void openModernConfig(ICommandSender sender) {
-        Minecraft minecraft = Minecraft.getMinecraft();
-        if (minecraft == null) {
-            sender.addChatMessage(new ChatComponentText("Qz UILib: 当前客户端不可用。"));
-            return;
-        }
-        ModernConfigEntry.open();
+        QzUiLibCommandActions.openModernConfig(sender);
     }
 
     /**
-     * 启用聊天 3.0 接管(开关置开并立即装配一次;后续渲染帧幂等维持)。
+     * 启用聊天 3.0 接管。与发布产物内同名子命令共用
+     * {@link QzUiLibCommandActions#enableChatTakeover}。
      *
      * @param sender 命令发送者
      */
     private void enableChatTakeover(ICommandSender sender) {
-        ChatMarkdownSettings.setEnabled(true);
-        ChatMarkdownInstaller.installIfNeeded();
-        sender.addChatMessage(new ChatComponentText("Qz UILib: 聊天 3.0 接管已启用。"));
+        QzUiLibCommandActions.enableChatTakeover(sender);
     }
 
     /**
-     * 关闭聊天 3.0 接管(开关置关并立即回退原版实例;逃生舱)。
+     * 关闭聊天 3.0 接管（逃生舱）。与发布产物内同名子命令共用
+     * {@link QzUiLibCommandActions#disableChatTakeover}。
      *
      * @param sender 命令发送者
      */
     private void disableChatTakeover(ICommandSender sender) {
-        ChatMarkdownSettings.setEnabled(false);
-        ChatMarkdownInstaller.installIfNeeded();
-        sender.addChatMessage(new ChatComponentText("Qz UILib: 聊天 3.0 接管已关闭,回退原版对话框。"));
+        QzUiLibCommandActions.disableChatTakeover(sender);
     }
 
     /**
-     * 输出接管状态诊断(开关/接管状态)。
+     * 输出接管状态诊断。与发布产物内同名子命令共用
+     * {@link QzUiLibCommandActions#reportChatStatus}。
      *
      * @param sender 命令发送者
      */
     private void reportChatStatus(ICommandSender sender) {
-        StringBuilder report = new StringBuilder("Qz UILib 聊天 3.0:开关=")
-                .append(ChatMarkdownSettings.isEnabled() ? "开" : "关")
-                .append(" | 接管状态=")
-                .append(ChatMarkdownInstaller.isInstalled() ? "已接管" : "未接管");
-        if (ChatMarkdownSettings.isEnabled() && !ChatMarkdownInstaller.isInstalled()) {
-            report.append("(等待渲染帧装配)");
-        }
-        sender.addChatMessage(new ChatComponentText(report.toString()));
+        QzUiLibCommandActions.reportChatStatus(sender);
     }
 
     @Override

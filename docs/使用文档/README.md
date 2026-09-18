@@ -35,7 +35,7 @@
 - ItemStack 视觉只使用 `HostImageSource.itemIcon(ItemStack)`（icon-only 合同），完整 item seam 见
   [物品视觉渲染接缝](../开发者文档/规格文档/物品视觉渲染接缝.md)。
 - 双端通信通过 `NetService` 注册 Channel / Fetch / Stream / Store。
-- 调试入口为 `/qzuilib <test|modernconfig>`（测试场地 + 配置页），均属 internal 调试设施，不构成对外稳定 API。
+- 命令入口 `/qzuilib <modernconfig|chatmd on|off|status>`（新架构配置页 + 聊天 3.0 接管开关）；发布产物内只有这两个玩家通道，scene 测试场地等开发设施位于 `internal.devtools`，整包不随发布 jar。
 
 ## 相关文档
 

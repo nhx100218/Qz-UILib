@@ -32,9 +32,9 @@ public class CommonProxy {
         // FontService.initialize 之前，让字体系统直接用新栈值初始化；必须在 NetTransportFactory.create
         // 之前，让 netTransport 用新栈值）
         File modernConfigFile = new File(event.getSuggestedConfigurationFile().getParentFile(), "qzuilib-modern.yaml");
-        MyMod.LOG.info("preInit 时序 [1/2]: ModernConfigBootstrap.bootstrapAndApply 开始");
+        MyMod.LOG.debug("preInit 时序 [1/2]: ModernConfigBootstrap.bootstrapAndApply 开始");
         ModernConfigBootstrap.bootstrapAndApply(modernConfigFile);
-        MyMod.LOG.info("preInit 时序 [2/2]: NetTransportFactory.create 开始");
+        MyMod.LOG.debug("preInit 时序 [2/2]: NetTransportFactory.create 开始");
         ITransport transport = NetTransportFactory.create(Config.netTransport);
         NetService.getInstance().bootstrap(transport);
         FMLCommonHandler.instance().bus().register(ForgeMainThreadDispatcherBridge.getInstance());

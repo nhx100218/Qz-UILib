@@ -5,6 +5,9 @@ import club.heiqi.config.ConfigChangeListener;
 
 import java.util.concurrent.CopyOnWriteArrayList;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+
 /**
  * 轻量配置事件总线，复用现有 {@link ConfigChangeEvent} / {@link ConfigChangeListener}。
  *
@@ -23,6 +26,8 @@ import java.util.concurrent.CopyOnWriteArrayList;
  * <p>本类零依赖 uilib。</p>
  */
 public final class ConfigEventBus {
+
+    private static final Logger LOG = LogManager.getLogger("QzUiLib/ConfigEventBus");
 
     private final CopyOnWriteArrayList<ConfigChangeListener> listeners = new CopyOnWriteArrayList<ConfigChangeListener>();
 
@@ -74,10 +79,10 @@ public final class ConfigEventBus {
                 listener.onConfigChanged(event);
             } catch (RuntimeException e) {
                 // 业务监听器运行时异常隔离，不影响其他监听器
-                e.printStackTrace();
+                LOG.error("[ConfigEventBus] 监听器运行时异常，已隔离：event={}", event, e);
             } catch (AssertionError e) {
                 // 测试/断言类非致命错误同样隔离；其他 Error 必须继续传播
-                e.printStackTrace();
+                LOG.error("[ConfigEventBus] 监听器断言失败，已隔离（非致命）：event={}", event, e);
             }
         }
     }

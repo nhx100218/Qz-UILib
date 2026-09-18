@@ -7,13 +7,12 @@ import club.heiqi.uilib.client.FontRenderTickListener;
 import club.heiqi.uilib.client.MinecraftMainThreadOracle;
 import club.heiqi.uilib.client.UiHudRenderListener;
 import club.heiqi.uilib.client.UiInputTickListener;
+import club.heiqi.uilib.client.command.QzUiLibClientCommand;
 import club.heiqi.uilib.config.modern.ChatFrameConfig;
 import club.heiqi.uilib.font.FontService;
 import club.heiqi.uilib.i18n.LanguageEpochService;
 import club.heiqi.uilib.internal.chat3.input.ChatFrameIntent;
 import club.heiqi.uilib.internal.chat3.input.ChatInputOpenListener;
-import club.heiqi.uilib.internal.devtools.DevToolsClientBootstrap;
-import club.heiqi.uilib.internal.devtools.NetRuntimeSelfChecks;
 import club.heiqi.uilib.net.api.NetService;
 import club.heiqi.uilib.net.client.NetStoreUiBridge;
 import club.heiqi.uilib.net.core.MainThreadDispatcher;
@@ -26,6 +25,8 @@ import cpw.mods.fml.common.FMLCommonHandler;
 import cpw.mods.fml.common.event.FMLPreInitializationEvent;
 import cpw.mods.fml.common.eventhandler.SubscribeEvent;
 import cpw.mods.fml.common.network.FMLNetworkEvent;
+import net.minecraft.launchwrapper.Launch;
+import net.minecraftforge.client.ClientCommandHandler;
 import net.minecraftforge.common.MinecraftForge;
 
 /**
@@ -49,7 +50,7 @@ public class ClientProxy extends CommonProxy {
         super.preInit(event);
         // 字体渲染骨架只在客户端引导，且必须晚于 ModernConfigBootstrap（读新栈配置值）、
         // 早于渲染/输入监听注册。判定权威在 FontService 内部，这里不做侧别判断。
-        MyMod.LOG.info("preInit 时序 [client]: FontService.initialize 开始");
+        MyMod.LOG.debug("preInit 时序 [client]: FontService.initialize 开始");
         FontService.getInstance().initialize();
         MyMod.LOG.info("字体系统已启用：{}", FontService.getInstance().isInitialized());
         UiInputService.getInstance().initialize();
@@ -63,15 +64,12 @@ public class ClientProxy extends CommonProxy {
         ResourceReloadService.getInstance().registerToClient();
         LanguageEpochService.getInstance().install();
         NetStoreUiBridge.getInstance().initialize();
-        DevToolsClientBootstrap.registerClientDevTools();
+        registerQzUiLibCommand();
         // 聊天框形态切换（4.10.1）：动作注册与配置持久化分居两层——internal.chat3 只发布切换语义，
         // 写盘/回灌实现在 config.modern（internal 不反向依赖配置包），装配层在此注入两个端口：
         // 先写盘、自定义输入屏按既有 CLOSING 动画收回去，关屏完成后才回灌运行态。
         // 与聊天总开关无关：切回原版后动作仍留在注册表，重新接管时按钮自然回来。
         ChatFrameIntent.install(ChatFrameConfig::persistVanilla, ChatFrameConfig::applyVanilla);
-        // 运行时自检端点集属于 devtools：唯一驱动者是客户端命令（DevToolsClientBootstrap 注册的
-        // qzuilib 命令）。在服务端注册只会白起常驻线程，并把 13 个调试端点暴露给任意客户端。
-        NetRuntimeSelfChecks.register();
         MinecraftForge.EVENT_BUS.register(fontRenderTickListener);
         MinecraftForge.EVENT_BUS.register(uiHudRenderListener);
         MinecraftForge.EVENT_BUS.register(chatInputOpenListener);
@@ -82,6 +80,46 @@ public class ClientProxy extends CommonProxy {
         FMLCommonHandler.instance().bus().register(angelicaHudCachingSuppressor);
         FMLCommonHandler.instance().bus().register(this);
         Runtime.getRuntime().addShutdownHook(new Thread(this::onJvmShutdown, "QzUiLibShutdown"));
+    }
+
+    /**
+     * 注册 {@code /qzuilib} 客户端命令。
+     *
+     * <p>内部开发工具（{@code internal.devtools}）整包不进发布产物——打包排除与
+     * {@code verifyDevToolsNotPackaged} 门禁见 build.gradle.kts。故此处按「开发环境 + 类确实存在」
+     * 双重探测：命中则交给开发工具装配（完整命令含 test/glass 场地，并连带注册网络自检端点集），
+     * 否则注册发布产物内的通道命令。探测走 {@code Class.forName} 而非静态引用——发布产物里没有
+     * 该包，静态引用会让本代理在校验期就解析失败。</p>
+     *
+     * <p>自检端点只在客户端注册：唯一驱动者就是客户端命令；在服务端注册只会白起常驻线程，
+     * 并把 13 个调试端点暴露给任意客户端。</p>
+     */
+    private static void registerQzUiLibCommand() {
+        if (registerInternalDevTools()) {
+            return;
+        }
+        ClientCommandHandler.instance.registerCommand(new QzUiLibClientCommand());
+    }
+
+    /**
+     * 开发环境装配内部开发工具客户端能力。
+     *
+     * @return true 表示已按开发环境完整命令装配；false 表示调用方应回退到发布产物内命令
+     */
+    private static boolean registerInternalDevTools() {
+        if (!Boolean.TRUE.equals(Launch.blackboard.get("fml.deobfuscatedEnvironment"))) {
+            return false;
+        }
+        try {
+            Class<?> bootstrap = Class.forName("club.heiqi.uilib.internal.devtools.DevToolsClientBootstrap",
+                    true, ClientProxy.class.getClassLoader());
+            bootstrap.getMethod("registerClientDevTools").invoke(null);
+            return true;
+        } catch (ClassNotFoundException absentFromRelease) {
+            return false;
+        } catch (ReflectiveOperationException failure) {
+            throw new IllegalStateException("内部开发工具客户端装配失败", failure);
+        }
     }
 
     /**

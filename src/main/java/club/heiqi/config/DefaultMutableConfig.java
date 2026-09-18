@@ -6,10 +6,15 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+
 /**
  * 可变配置的默认实现
  */
 public class DefaultMutableConfig implements MutableConfig {
+
+    private static final Logger LOG = LogManager.getLogger("QzUiLib/DefaultMutableConfig");
 
     private final ConfigFormat format;
     private final ConfigSource source;
@@ -500,8 +505,8 @@ public class DefaultMutableConfig implements MutableConfig {
             try {
                 listener.onConfigChanged(event);
             } catch (Exception e) {
-                // 忽略监听器异常
-                e.printStackTrace();
+                // 隔离单个监听器异常，不影响其余监听器；走日志系统而非 stderr，便于过滤与归档
+                LOG.error("[DefaultMutableConfig] 配置变更监听器抛出异常，已隔离：event={}", event, e);
             }
         }
     }

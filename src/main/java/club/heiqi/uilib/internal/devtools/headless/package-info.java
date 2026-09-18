@@ -34,7 +34,8 @@
  * </ol>
  *
  * <h3>打包边界</h3>
- * <p>本包是开发期设施：{@code build.gradle.kts} 在全部 Jar 型产物上排除本包，并由
- * {@code verifyHeadlessNotPackaged} 门禁逐个打开产物断言。禁止在此包引入生产运行期必需的类。</p>
+ * <p>本包是开发期设施：{@code build.gradle.kts} 在全部 Jar 型产物上排除 {@code internal.devtools}
+ * 整包（本包是其中一个），并由 {@code verifyDevToolsNotPackaged} 门禁逐个打开产物断言。
+ * 禁止在此包引入生产运行期必需的类。</p>
  */
 package club.heiqi.uilib.internal.devtools.headless;

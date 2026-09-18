@@ -165,8 +165,16 @@ public class FontRuntimeEnvironmentTest {
         Assert.assertTrue("字体引导必须落到客户端代理", clientProxy.contains("FontService"));
         Assert.assertFalse("服务端代理不得注册客户端 devtools 自检端点（常驻线程 + 13 个调试端点）",
                 commonProxy.contains("NetRuntimeSelfChecks"));
-        Assert.assertTrue("devtools 自检端点必须跟着它的客户端驱动一起注册",
-                clientProxy.contains("NetRuntimeSelfChecks"));
+        // 解析器自检：类名以内部名形式落在常量池里确实可检出，否则下面的反向断言会恒真。
+        Assert.assertTrue("解析器自检：客户端代理静态引用的类必须以内部名出现在常量池里",
+                clientProxy.contains("club/heiqi/uilib/font/FontService"));
+        // devtools 整包不进发布产物（build.gradle.kts 的 verifyDevToolsNotPackaged）：代理对它
+        // 只能走 Class.forName 探测，静态引用会让发布产物的代理在校验期就解析失败。
+        Assert.assertFalse("客户端代理不得静态引用 devtools 包",
+                clientProxy.contains("club/heiqi/uilib/internal/devtools/"));
+        Assert.assertTrue("devtools 装配必须留在「开发环境门 + Class.forName 探测」路径上",
+                clientProxy.contains("club.heiqi.uilib.internal.devtools.DevToolsClientBootstrap")
+                        && clientProxy.contains("fml.deobfuscatedEnvironment"));
     }
 
     /**
