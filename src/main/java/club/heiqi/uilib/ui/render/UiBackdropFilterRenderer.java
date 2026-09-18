@@ -1,5 +1,7 @@
 package club.heiqi.uilib.ui.render;
 
+import java.util.concurrent.atomic.AtomicLong;
+
 import org.lwjgl.opengl.GL11;
 import org.lwjgl.opengl.GL13;
 import org.lwjgl.opengl.GL14;
@@ -38,6 +40,14 @@ final class UiBackdropFilterRenderer {
 
     private static volatile BackdropFilterRenderPath lastRenderPath = BackdropFilterRenderPath.NONE;
     private static volatile String lastDetail = "not-run";
+    /**
+     * 进程级 backdrop 滤波请求累计次数（入口计数，与最终走哪条路径无关）。
+     *
+     * <p>存在理由：「最近一次路径」这类<b>最后值</b>读数无法回答「这段渲染窗口里究竟有没有发生玻璃请求」
+     * —— 上一次请求的残留与本次真的走了同一路径在读数上完全一样。需要按窗口判定时（headless 出图摘要
+     * 要如实报「本帧没走玻璃」而不是上次的残留）必须有一个<b>单调计数</b>可比较。</p>
+     */
+    private static final AtomicLong invocationCount = new AtomicLong();
 
     private UiBackdropFilterRenderer() {}
 
@@ -53,6 +63,18 @@ final class UiBackdropFilterRenderer {
      */
     static String getLastDetail() {
         return lastDetail;
+    }
+
+    /**
+     * 返回进程级 backdrop 滤波请求累计次数。
+     *
+     * <p>计数点在完整入口，因此被页面策略禁用、被档位短路、快照不可用、降级到固定管线或 tint 兜底
+     * 的请求<b>同样计入</b> —— 它回答的是「有没有发生玻璃请求」，不是「shader 画了几次」。</p>
+     *
+     * @return 累计次数
+     */
+    static long getInvocationCount() {
+        return invocationCount.get();
     }
 
     /**
@@ -106,6 +128,7 @@ final class UiBackdropFilterRenderer {
      */
     static void render(UiRenderContext context, int left, int top, int right, int bottom, int blurRadius,
             float saturation, UiBorderRadiusResolver.ResolvedCornerRadii cornerRadii, UiBackdropEffect effect) {
+        invocationCount.incrementAndGet();
         BackdropBlurPolicy policy = context == null ? BackdropBlurPolicy.inheritGlobal()
                 : context.getBackdropBlurPolicy();
         BackdropBlurConfig config = BackdropBlurConfig.getInstance();

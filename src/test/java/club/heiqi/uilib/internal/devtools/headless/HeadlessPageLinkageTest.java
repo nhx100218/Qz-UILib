@@ -87,6 +87,62 @@ public class HeadlessPageLinkageTest {
                 3, colors.size());
     }
 
+    /** 磨玻璃实验室在最小集上必须真的出图（页面覆盖：它此前只能靠开游戏看）。 */
+    @Test
+    public void glassPageRendersOnTheMinimalClasspath() throws Exception {
+        String output = render("linkage-glass", "--page=glass");
+        Assert.assertTrue("磨玻璃实验室必须下发绘制命令（否则是装配失败而非「页面没内容」）：\n" + output,
+                commandsOf(output) > 0);
+        Assert.assertTrue("磨玻璃实验室自检必须通过：\n" + output, output.contains("self-check: ok"));
+    }
+
+    /**
+     * 玻璃必须走 shader 路径 —— 钉住 <b>2026-09-02 至 09-18 的静默降级回归</b>。
+     *
+     * <p>那段时期 {@code uiBackdropF.frag} 的注释里混入了中文，NVIDIA 编译器直接报
+     * {@code error C0000: syntax error, unexpected $undefined}，程序不可用 ⇒ 玻璃一路降级到固定管线
+     * （仅模糊、无 vibrancy / 亮边 / 噪点 / 液态折射），日志不报错、画面只是"没那么好看"。
+     * 本判据钉的是端到端事实（本帧真的用了 shader），不是源字符集检查 —— 后者是另一条独立门禁
+     * （{@code GlslSourceAsciiGuardTest}）。</p>
+     */
+    @Test
+    public void glassBackdropUsesTheShaderPath() throws Exception {
+        String output = render("linkage-glass-shader", "--page=glass");
+        Assert.assertTrue("玻璃未走 shader 路径（先查 GLSL 资源是否含非 ASCII / 着色器是否编译失败）：\n" + output,
+                output.contains("backdrop: path=shader"));
+    }
+
+    /**
+     * glass 页必须真的接收 {@code --theme}：外观档注入是它的一项交付，不能只停在「参数收下了」。
+     *
+     * <p>独立复核用变异指出过这个覆盖缺口：把 {@code createHost} 里 glass 分支的 theme 传 {@code null} 时，
+     * 本类其余 7 条 + {@code GlassLabHostThemeTest} 8 条 + {@code GlassLabHostTest} 5 条<b>全绿</b>
+     * —— 即「glass 接收外观档」这项能力当时没有任何判据守着。本判据按颜色数两两不同来钉端到端事实
+     * （实测 dark 16336 / light 14373；与 config 的 section 轴判据同型）。</p>
+     */
+    @Test
+    public void glassThemeAxisSwitchesContent() throws Exception {
+        String output = render("linkage-glass-theme", "--page=glass",
+                "--themes=liquid-glass-dark,liquid-glass-light");
+        Set<String> colors = new LinkedHashSet<String>();
+        Matcher matcher = COLORS.matcher(output);
+        while (matcher.find()) {
+            colors.add(matcher.group(1));
+        }
+        Assert.assertEquals("两档外观必须画出不同内容（颜色数全同即主题没接到 glass 装配上）：\n" + output,
+                2, colors.size());
+    }
+
+    /** 玻璃路径读数必须按「本次渲染窗口的请求计数」判定，不得把上一档的残留报成本档事实。 */
+    @Test
+    public void backdropPathIsNotInheritedAcrossPagesInOneProcess() throws Exception {
+        String output = render("linkage-backdrop-shared", "--share-context", "--pages=glass,text-probe");
+        Assert.assertEquals("glass 档应报 shader、text-probe 档应报 none（同进程复用时会暴露残留误报）：\n" + output,
+                1, countOf(output, "backdrop: path=shader"));
+        Assert.assertEquals("无玻璃请求的页面必须如实报 none：\n" + output,
+                1, countOf(output, "backdrop: none"));
+    }
+
     /** 出图不得在进程外留痕：临时配置目录跑完必须消失。 */
     @Test
     public void configPageLeavesNoTempDirectory() throws Exception {
@@ -182,6 +238,17 @@ public class HeadlessPageLinkageTest {
             }
         }
         return found;
+    }
+
+    /** 统计子串在输出里出现的次数。 */
+    private static int countOf(String output, String needle) {
+        int count = 0;
+        int offset = 0;
+        while ((offset = output.indexOf(needle, offset)) >= 0) {
+            count++;
+            offset += needle.length();
+        }
+        return count;
     }
 
     /** 从输出里取命令面摘要的命令数；没有该行返回 -1。 */

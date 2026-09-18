@@ -351,6 +351,19 @@ public class UiRenderContext implements UiRenderBackend {
     }
 
     /**
+     * 返回进程级 backdrop 滤波请求累计次数（单调递增）。
+     *
+     * <p>与 {@link #getLastBackdropFilterRenderPath()} 的分工：后者是<b>最后值</b>，回答「最近一次走了
+     * 哪条路径」；本方法是<b>计数</b>，回答「从某个时刻到现在有没有发生过请求」。只有后者能区分
+     * 「本次真的走了这条路径」与「上一次的残留」—— 按渲染窗口判别时必须用它。</p>
+     *
+     * @return 累计请求次数
+     */
+    public static long getBackdropFilterInvocationCount() {
+        return UiBackdropFilterRenderer.getInvocationCount();
+    }
+
+    /**
      * 绘制矩形。
      *
      * @param left 左侧坐标

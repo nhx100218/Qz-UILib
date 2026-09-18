@@ -1,6 +1,7 @@
 package club.heiqi.uilib.internal.devtools.glass;
 
 import club.heiqi.uilib.internal.devtools.playground.PlaygroundKit;
+import club.heiqi.uilib.ui.env.UiEnvironment;
 import club.heiqi.uilib.ui.reactive.ReadableSignal;
 import club.heiqi.uilib.ui.reactive.Signal;
 import club.heiqi.uilib.ui.render.UiBackdropEffect;
@@ -12,6 +13,7 @@ import club.heiqi.uilib.ui.scene.control.SceneLabel;
 import club.heiqi.uilib.ui.scene.control.SceneSlider;
 import club.heiqi.uilib.ui.scene.control.SceneToggle;
 import club.heiqi.uilib.ui.scene.host.AbstractSceneHostWidget;
+import club.heiqi.uilib.ui.scene.host.SceneHostAssembly;
 import club.heiqi.uilib.ui.scene.input.PlatformInputSource;
 import club.heiqi.uilib.ui.scene.input.SceneInteractionState;
 import club.heiqi.uilib.ui.scene.layout.AnchorRect;
@@ -102,8 +104,8 @@ public final class GlassLabHost extends AbstractSceneHostWidget {
     /** 外壳表面 enabled：外壳/卡片表面不可禁用（表面绑定器只关心恒真）。 */
     private static final ReadableSignal<Boolean> SHELL_ENABLED = () -> Boolean.TRUE;
 
-    /** runtime 默认主题信号：外壳表面与主题前景文字的共同来源，可整体切换。 */
-    private final Signal<SceneTheme> themeSignal = Signal.create(SceneThemes.DEFAULT);
+    /** runtime 默认主题信号：外壳表面与主题前景文字的共同来源，可整体切换；构造期确定（见构造）。 */
+    private final Signal<SceneTheme> themeSignal;
     /** 根节点。 */
     private final SceneNode root;
     /** 采样场色带 chip（§7.3 显式材质样本，构建期登记供反向钉断言）。 */
@@ -152,13 +154,12 @@ public final class GlassLabHost extends AbstractSceneHostWidget {
     private final Signal<String> radiusTextSignal = Signal.create("圆角 16");
 
     /**
-     * 创建磨玻璃实验室宿主。
+     * 创建磨玻璃实验室宿主（环境取生产默认、外观取宿主默认）。
      *
      * @param input 平台输入源，可为 null（headless 测试退化模式）
      */
     public GlassLabHost(PlatformInputSource input) {
-        super(input);
-        this.root = buildThemedTree();
+        this(input, SceneHostAssembly.defaultEnvironment(), null);
     }
 
     /**
@@ -168,7 +169,49 @@ public final class GlassLabHost extends AbstractSceneHostWidget {
      * @param input    平台输入源，可为 null
      */
     public GlassLabHost(SceneTextMeasurer measurer, PlatformInputSource input) {
-        super(measurer, input);
+        this(measurer, input, SceneHostAssembly.defaultEnvironment(), null);
+    }
+
+    /**
+     * 环境可注入构造（外观取宿主默认）。
+     *
+     * <p>宿主环境是构造依赖（F22 口径）：headless 出图矩阵按请求注入环境事实时走这里，
+     * 不回落生产单例。</p>
+     *
+     * @param input       平台输入源，可为 null（headless 测试退化模式）
+     * @param environment 宿主环境端口，不可为 null
+     */
+    public GlassLabHost(PlatformInputSource input, UiEnvironment environment) {
+        this(input, environment, null);
+    }
+
+    /**
+     * 环境与外观都可注入的构造（headless 出图矩阵入口）。
+     *
+     * <p>外观参数只能走构造：{@link SceneThemes#install} 把主题信号写进 runtime 根作用域，而控件的
+     * 配方派生在<b>构建期</b>捕获该信号对象 —— 换信号对象只影响此后构建的控件，故必须在建树之前
+     * 确定（同 {@code TestPlaygroundHost} 口径）。</p>
+     *
+     * @param input       平台输入源，可为 null（headless 测试退化模式）
+     * @param environment 宿主环境端口，不可为 null
+     * @param theme       初始外观档；{@code null} = 宿主默认（{@link SceneThemes#DEFAULT}）
+     */
+    public GlassLabHost(PlatformInputSource input, UiEnvironment environment, SceneTheme theme) {
+        this(SceneHostAssembly.defaultMeasurer(), input, environment, theme);
+    }
+
+    /**
+     * 完整注入构造：度量端口、环境端口与初始外观都由调用方给定。
+     *
+     * @param measurer    文本度量端口
+     * @param input       平台输入源，可为 null（headless 测试退化模式）
+     * @param environment 宿主环境端口，不可为 null
+     * @param theme       初始外观档；{@code null} = 宿主默认（{@link SceneThemes#DEFAULT}）
+     */
+    public GlassLabHost(SceneTextMeasurer measurer, PlatformInputSource input, UiEnvironment environment,
+            SceneTheme theme) {
+        super(measurer, input, environment);
+        this.themeSignal = Signal.create(theme == null ? SceneThemes.DEFAULT : theme);
         this.root = buildThemedTree();
     }
 

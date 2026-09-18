@@ -61,6 +61,18 @@ public final class HeadlessRequest {
      */
     public static final String CONFIG_PAGE = "config";
     /**
+     * 磨玻璃实验室标识：{@code club.heiqi.uilib.internal.devtools.glass.GlassLabHost}
+     * （backdrop-filter 观感验收页，零 MC 依赖）。
+     *
+     * <p>它比其他页多两层证据：宿主在每次 {@code render} 里把请求后端的 backdrop 矩形登记下来，
+     * 并把后端实际走的渲染路径（shader / fixed-pipeline / tint-fallback）写进诊断卡的受控文本源
+     * —— 后者是树上的真实节点，故 {@code --nodes=all} / {@code --find} 读到的就是本帧玻璃路径，
+     * 不需要另造读数通道。</p>
+     *
+     * <p>{@code pageIndex} 在这里无意义（忽略）：实验室没有子页/分节，参数台与诊断卡同帧全在。</p>
+     */
+    public static final String GLASS_PAGE = "glass";
+    /**
      * 聊天消息分隔符：{@code --text} 用它切成多条消息。
      *
      * <p>不取 {@code |}：那是 Windows 命令行的管道符，写进 {@code --text} 会被 shell 先解释掉。</p>

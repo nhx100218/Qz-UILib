@@ -20,10 +20,12 @@ public final class HeadlessArtifact {
     private final int renderedFrames;
     private final String inputSummary;
     private final String performanceSummary;
+    private final String backdropSummary;
 
     HeadlessArtifact(HeadlessRequest request, HeadlessCapabilities capabilities,
             HeadlessSelfCheck.Report selfCheck, HeadlessDrawSummary drawSummary, Path output, long pngBytes,
-            long elapsedMillis, int renderedFrames, String inputSummary, String performanceSummary) {
+            long elapsedMillis, int renderedFrames, String inputSummary, String performanceSummary,
+            String backdropSummary) {
         this.request = request;
         this.capabilities = capabilities;
         this.selfCheck = selfCheck;
@@ -34,6 +36,7 @@ public final class HeadlessArtifact {
         this.renderedFrames = renderedFrames;
         this.inputSummary = inputSummary;
         this.performanceSummary = performanceSummary;
+        this.backdropSummary = backdropSummary;
     }
 
     /** @return 源请求 */
@@ -88,6 +91,26 @@ public final class HeadlessArtifact {
         return performanceSummary;
     }
 
+    /**
+     * 本次出图期间的 backdrop（玻璃）滤波事实：走了哪条路径 + 该路径的诊断说明。
+     *
+     * <p>它回答的是「这张图的玻璃是不是真的按材质档画的」：{@code shader} 是完整路径，
+     * {@code fixed-pipeline} / {@code tint-fallback} 是降级档（观感证据只到模糊/实色）；
+     * {@code none} 表示本窗口<b>最后一次玻璃请求没有成功路径</b> —— 既可能是「一次请求都没发起」（此时正文
+     * 是未发起说明），也可能是最后一次请求被策略 / 档位 / 几何 / 裁剪短路（正文给出该原因）；两者按同行
+     * {@code requests=} 的<b>有无</b>区分（有 = 发生过请求、无 = 未发起）。判定取请求计数差而非「最近一次路径」的最后值：后者在批量同进程出图时会把
+     * 上一档的残留报成本档事实（见 {@code UiRenderContext#getBackdropFilterInvocationCount()}）。</p>
+     *
+     * <p><b>可参与对拍</b>：路径、请求数与 detail 里的 {@code rev=N} 都只由请求决定（时间事实已解耦，
+     * F27），实测同命令多次运行该行逐字节相同。它仍是<b>过程读数</b>而非像素事实，故不进 PNG；
+     * 默认打印的理由是玻璃路径决定像素证据的<b>强度分级</b>（不看它无法判断一张图能否据此下观感结论）。</p>
+     *
+     * @return 玻璃路径摘要
+     */
+    public String backdropSummary() {
+        return backdropSummary;
+    }
+
     /** @return 多行可读摘要（CLI 默认输出） */
     public String describe() {
         StringBuilder sb = new StringBuilder();
@@ -98,6 +121,7 @@ public final class HeadlessArtifact {
         sb.append("[headless] output: ").append(output).append(" (").append(pngBytes).append(" bytes)")
                 .append('\n');
         sb.append("[headless] self-check: ").append(selfCheck.summary()).append('\n');
+        sb.append("[headless] backdrop: ").append(backdropSummary).append('\n');
         for (String note : selfCheck.notes()) {
             sb.append("[headless]   - ").append(note).append('\n');
         }

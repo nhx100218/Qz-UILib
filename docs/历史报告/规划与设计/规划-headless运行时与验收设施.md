@@ -1081,6 +1081,144 @@ coordinator 做 initial apply（仓库注释自述「可能随后把 FontConfig 
 是构造依赖」，而配置页此前只有单参 `super(input)` ⇒ 永远读生产单例，且这一处**不受 headless 包的环境
 门禁覆盖**（门禁只扫 headless 生产包自身）。
 
+### F38 磨玻璃实验室纳入 headless，与一个藏了 16 天的玻璃 shader 静默降级（2026-09-18）
+
+**动机**：`glass`（磨玻璃实验室）是**液态玻璃观感的主验收面**，却是唯一没有进 headless 页面表的主要界面——
+agent 改玻璃渲染后无法出图自证。它是页面覆盖缺口里最后一块大件。
+
+**一手事实（决定接入成本）**：
+
+- `GlassLabHost` 全类 `import net.minecraft` **0 条**，且宿主无关（与 `TestPlaygroundHost` 同为
+  `AbstractSceneHostWidget` 子类）⇒ 最小集即可跑，与 F37 的 config 页同类；
+- `GlassLabEntry` / `GlassLabScreen` 是 MC 宿主包装，headless 不碰它们（F37 的「一个类要么是宿主、
+  要么是装配」判据自动满足）；
+- 缺口在于**注入面**：原构造只有 `(input)` 与 `(measurer, input)`，主题信号是字段初值 `SceneThemes.DEFAULT`
+  ⇒ 无法按请求装配外观档。
+
+**接入形态**：`--page=glass`；新增 `GlassLabHost(input, environment, theme)` 与
+`GlassLabHost(measurer, input, environment, theme)`，旧构造改为委托（环境取生产默认、外观取宿主默认，
+生产行为逐位不变）。与 F30「外观是装配期环境量」同口径：主题信号必须在建树前确定。`--page-index` 忽略
+（实验室无子页）。
+
+**头号发现：玻璃 shader 自 2026-09-02 起从未编译成功（静默降级 16 天，覆盖该文件 21 个版本中的后 17 版）**
+
+接入后第一次出图，诊断卡给出的是 `backdrop 路径: fixed-pipeline | 诊断: shader-unavailable, samples=8,
+effect-degraded(no-vibrancy)` —— 即玻璃走的是**固定管线降级档**（多重采样叠加模糊，无 vibrancy / 亮边 /
+噪点 / 液态折射）。诊断文本被投影截断，故写了一次性反射探针直读程序状态（探针已清理）：
+
+| 探针读数（初版只做到单阶段编译；复核补齐到 **program** 级） | 结果 |
+|---|---|
+| `FULL_BUDGET_PROGRAM.ensureInitialized()`（编译 + 链接 + 校验） | **false** |
+| 失败消息 | `UI backdrop 着色器编译失败: 0(19) : error C0000: syntax error, unexpected $undefined at token "<undefined>"` |
+| `uiBackdropF.frag` 原样编译（注入抽头预算后） | **FAIL**（同上） |
+| 同一 frag 把非 ASCII 逐字符换成 `?` | **OK** |
+| `uiBackdropV.vert` 原样**单阶段**编译 | **OK** —— 但**整程序不是 OK**，见下 |
+
+**根因**：GLSL 1.20 的源字符集是 ASCII，而 `uiBackdropF.frag` 的中文注释（首行 `#version` 之后的
+两段说明）被 NVIDIA 编译器判为语法错误。行号 `0(19)` 与源文件行号不一一对应（整份源 ASCII 化后立刻通过，
+故不必追到具体字符）。
+
+**「vert 中文无害」是初版结论，已被独立复核推翻（本轮修正）**：初版探针只做到单阶段
+`glCompileShader`，据此写过「`uiBackdropV.vert` 有 4 行中文却通过 ⇒ 非 ASCII 一律致命不成立」。
+复核用**程序级**探针（编译 + 链接 + `glValidateProgram`）实测：中文 vert + ASCII frag 时两个 stage
+**各自编译都返回 OK**，但**整个 program 链接失败**（`LINK-FAIL Vertex info`）—— NVIDIA 把完整编译推迟到
+link 阶段；把非 ASCII 换成 `?` 后 program 立刻恢复 OK。也就是说**本机驱动上非 ASCII 落在任一阶段都让程序
+不可用**，门禁取严（任何非 ASCII 即红）的理由比初版写的更充分，而"分阶段看起来没事"不能作为放行依据。
+
+**回溯 git（逐版本统计非 ASCII 行数）**：
+
+| 版本 | 非 ASCII 行数 | 说明 |
+|---|---|---|
+| `502ce419`…`ec0429a3`（2026-04-28 ~ 06-13） | **0** | shader 一直可编译 |
+| `ac1582a2`（2026-09-02 01:25） | **5** | 首次写入中文注释 ⇒ **本日起 shader 不可用** |
+| `b26399c2`（2026-09-13） | 127 | 最后一次写入 |
+
+也就是说：2026-09-02 之后所有玻璃材质档（vibrancy / tint 门控 / SDF 亮边 / 反 banding 抖噪 / Liquid Glass
+折射）**从未在屏幕上出现过**，而这期间的多个提交恰恰在按真机观感调这些参数。
+
+**为什么能藏 16 天**：降级是**设计内**行为（`shader-unavailable → fixed-pipeline`），既不抛异常也不打日志；
+画面只是「没那么好看」。观测面上唯一的分叉是诊断卡文本，而它此前只有开游戏才看得到 ——
+**这正是「UI 改动必须能出图自证」的用例本身**。
+
+**修法**：把 `uiBackdropF.frag`（127 行）与 `uiBackdropV.vert`（4 行）的注释按行翻成 ASCII 英文；
+代码行**逐字节不变**（用「行号 → 替换行」映射脚本改，并断言行数不变、目标行原本含非 ASCII、替换后无非 ASCII、
+行尾仍为 LF）。修复后两个档位程序 `ensureInitialized=true`。
+（第二轮复核指出缩进恢复脚本曾给 frag 误加一个文件末尾换行，已还原 —— 现在两份文件的行数、末尾换行状态都与
+HEAD 一致，剥离注释后代码逐字节相同。）
+
+**顺带新增的读数：`backdrop:` 行**（本次窗口的玻璃事实）：
+
+- 读的是 `UiRenderContext.getLastBackdropFilterRenderPath()` + `getLastBackdropFilterDetail()`；
+- 但**不能直接用最后值**：静态「最近一次路径」在批量同进程出图时会把上一档的残留报成本档事实。
+  故新增 `UiBackdropFilterRenderer` 的**请求计数**（完整入口自增，被策略/档位短路、快照不可用、降级、
+  tint 兜底都计入）与 `UiRenderContext.getBackdropFilterInvocationCount()`，读数取窗口前后差；
+- 语义三种：`path=shader`（完整路径）/ `path=fixed-pipeline|tint-fallback`（降级档）/ `none`（**本窗口最后一次玻璃请求没有成功路径**：可能是没发起请求，也可能是被策略/档位/几何/裁剪短路 —— 由同行 `requests=` 的**有无**区分：有 `requests=` 即发生过请求、无则未发起）；
+- `detail` 段含主层内容版本号（实测 `rev=N`，来自 `MainLayerSnapshot.getContentRevision()`，不是帧序号 —— 帧数是同行 `frames:` 读数）等过程量，但它们同样只由请求决定：**实测同命令多次运行整行逐字节相同**，可参与对拍（不进 PNG）。
+
+**门禁（5 条）**——其中 4 条已验证「变异即红」，`glassPageRendersOnTheMinimalClasspath` 是**对照锚**（缺陷态下仍绿，正是它与另两条各钉一项的证明）：
+
+| 判据 | 钉住的事实 | 变异验证 |
+|---|---|---|
+| `GlslSourceAsciiGuardTest` | GLSL 源（全部 `.frag`/`.vert`）纯 ASCII 且无 BOM；目录扫空即失败（防改名静默空转） | 在 vert 插入一个中文 ⇒ **FAILED**（1 failed） |
+| `glassPageRendersOnTheMinimalClasspath` | 实验室在最小集真的出图 | 缺陷态下**仍绿**（页面能出图、只是降级）——与下一条各钉一项 |
+| `glassBackdropUsesTheShaderPath` | 端到端：本帧玻璃真的走 shader | frag 切回中文缺陷态 ⇒ **FAILED** |
+| `backdropPathIsNotInheritedAcrossPagesInOneProcess` | `--share-context --pages=glass,text-probe` 下 glass 报 shader、text-probe 报 none | 判定改成「最后值」⇒ **FAILED**（1 failed，其余 7 绿） |
+| `glassThemeAxisSwitchesContent` | glass 真的接收 `--theme`（两档颜色数须不同） | `createHost` 里 theme 传 `null` ⇒ **FAILED**（8 tests / 1 failed）。此条是**独立复核指出的覆盖缺口**：此前该能力无任何判据守着（20 条测试全绿） |
+
+**验收（一手实测）**：
+
+| 项 | 修前 | 修后 |
+|---|---|---|
+| `--page=glass --size=1280x900` 路径 | `fixed-pipeline`（`effect-degraded(no-vibrancy)`、samples=8） | **`shader`**（`blur=18, saturation=1.00, family=CLASSIC, material=REGULAR vibrancy=1.45`） |
+| 同图读数 | `colors=7327`、277892 B | `colors=16336`、739951 B |
+| 命令面 | `commands=62 … clip=19/37` | `commands=62 … clip=19/19`（固定管线逐 quad 叠加的入口计数消失） |
+| 多页面批量 | — | `--pages=playground,chat,hud,config,glass` ⇒ **5/5 ok**，playground/chat/hud/glass 均为 `path=shader`，config 为 `none`（配置页 UI 无玻璃请求） |
+| 外观轴 | — | dark vs light **585339/1152000** 像素不同；solid-dark 请求数 8（实色档多数表面不带滤镜配方） |
+| 同命令可复现 | — | 同参数两次 `0/1152000` |
+
+**独立审核与处置（零上下文子代理，本轮流程）**：
+
+审核总判 **有条件通过**；它独立复现了全部关键主张（自建仓外探针、5 组变异、`cleanTest test` 实跑、
+逐项核对文档数字），并给出 1 条【应当修】+ 若干建议。处置如下：
+
+| 审核意见 | 处置 |
+|---|---|
+| 【应当修】「vert 中文无害 ⇒ 非 ASCII 一律致命不成立」失实（程序级：两 stage 各自编译 OK 但 program 链接失败） | 已改本节根因段与 `GlslSourceAsciiGuardTest` 类注释，门禁取严的理由改为「任一阶段非 ASCII 都让程序不可用」 |
+| 【建议】`detail` 段「逐次不同、不参与对拍」失实（同命令三连跑逐字节相同） | 已改 `HeadlessArtifact` javadoc 与使用指南：该行**可参与对拍** |
+| 【建议】`none` 混两种状态（未发起 / 请求全被短路） | javadoc 与指南改为「本窗口**最后一次**玻璃请求没有成功路径」，并说明按同行 `requests=` 的有无区分（第二轮复核把口径精确到「最后一次」） |
+| 【建议】glass 的 `--theme` 注入无判据（变异传 `null` 时 20 条测试全绿） | **补判据** `glassThemeAxisSwitchesContent`（两档颜色数须不同，变异验证会红）；并把 glass 行补进 `HeadlessThemes` 类注释，使指南「出处」重新成立 |
+| 【建议】91 行注释缩进被改（与「行号→替换行」方法不符） | 已按 HEAD 原缩进逐行恢复；自查：剥离注释后代码 156 / 10 行**逐字节相同** |
+| 【建议】「跨 21 个提交」口径偏大 | 已改为「覆盖该文件 21 个版本中的后 17 版」 |
+| 【建议】双 dispose 处没有指向记录 | 改为**直接清理**（复核已证幂等；处置记录见下方「边界与未做项」第 3 条） |
+| 【建议】门禁新开 `gl.shader` 包、与同族测试分家；硬编码相对路径 | **不改**：本类判据是「资源字符集」（扫源目录全量字符），与 `ui.render` 的着色器语法测试不同族；路径取 Gradle 工程根（test 工作目录），且「目录扫空即判失败」已防静默空转 |
+**第二轮独立复核（针对上述处置）** 总判仍为**有条件通过**，指出 4 点，提交前已全部处置：
+
+1. F38 节内两处旧句（`none` 语义、「`detail` 不参与对拍」）未随代码注释与使用指南同步，与本节处置表自相矛盾
+   —— 已就地改写为与代码一致的表述；
+2. `none` 的新措辞「本窗口没有成功路径」**强于实现**：判定取的是**最后一次请求**的路径，先成功、最后一次
+   被短路时会报 `none`（复核在约 38 次出图里未复现，属措辞精度）—— 已全部改为「本窗口**最后一次**玻璃请求
+   没有成功路径」；
+3. 缩进恢复脚本给 frag 误加了一个**文件末尾换行**（HEAD 无尾换行），使「只改注释」在字节级不成立
+   —— 已还原并复核（见「修法」段末）；
+4. 门禁段标题「4 条，全部变异验证会红」与表内对照锚「缺陷态下仍绿」相抵 —— 已改为「5 条，其中 4 条验证会红、
+   1 条是对照锚」，并把复核指出的覆盖缺口判据 `glassThemeAxisSwitchesContent` 补进表内。
+**边界与未做项（如实登记）**：
+
+1. **材质档 shader 从未在真机跑过**：本机 headless 只能证明「编译通过、路径为 shader、像素画出来了」，
+   **不能替代观感验收** —— 玻璃观感（vibrancy 强度、亮边形态、抖噪颗粒度）需用户在真机复验；
+   这也意味着修复后**玻璃观感相对 09-02 以来会有明显变化**，这不是新特性而是设计意图首次生效；
+2. 本机 headless 走 `shader` 是**环境事实**（RTX 5070 Ti / NVIDIA 610.74），换驱动仍可能落到固定管线，
+   故 `backdrop:` 行必须逐次如实报告，使用文档已写明「别当跨机器金样」；
+3. **（已处置，保留记录）`HeadlessSession.close()` 的重复 `host.dispose()` 已在本轮清理**（独立复核确认宿主 dispose 幂等：
+   `Owner` 回收有 disposed 短路，第二次调用恒为 no-op）。原计划「留待下一轮」，复核给出幂等证据后一并删除，
+   属零行为差异的清理；
+4. **退出码契约缺口（已登记，未做）**：用错启动器（最小集跑 `chat` / `hud`）时装配抛未捕获的
+   `NoClassDefFoundError: net/minecraft/...`，进程以**退出码 1** 收场 —— 不在契约的 0/2/3/4/5 内，
+   脚本与 `HeadlessShotGate` 无法按契约分流。本轮只在使用文档写明处置（换 `qz-shot-full.bat`）；
+   把未捕获 `Error` 纳入契约（归类 + 可操作指引）留作下一轮；
+5. GLSL 里 `#if UIB_TAP_BUDGET` 两档（13/9）都实测可编译，但 headless 只跑到完整档（`BackdropQualityService`
+   默认档）；9 档的端到端出图未覆盖。
+
 ## 三、目标形态
 
 **四件套 + 一个出口：**

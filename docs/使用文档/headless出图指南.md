@@ -37,9 +37,9 @@ GL 上下文需要窗口句柄，而 LWJGL2 的 `Display.create()` 会创建**�
 
 | 参数 | 说明 |
 |---|---|
-| `--page=A\|B\|…` | 单页面；`playground` = 测试场地，`text-probe` = 单行文本探针，`chat` = 聊天 3.0 内容树，`hud` = 同一内容树走 HUD 宿主装配，`config` = 生产配置页（三者均见下节） |
+| `--page=A\|B\|…` | 单页面；`playground` = 测试场地，`text-probe` = 单行文本探针，`chat` = 聊天 3.0 内容树，`hud` = 同一内容树走 HUD 宿主装配，`config` = 生产配置页，`glass` = 磨玻璃实验室（backdrop-filter 观感验收，均见下节） |
 | `--pages=A,B,…` | **多页面矩阵**（与尺寸 / 外观 / 字号轴同构）；与 `--page` 同时给出时本参数胜 |
-| `--page-index=N` / `--page-indexes=0,1,…` | `playground` 子页下标（0 总览 / 1 单行文本 / 2 多行文本 / 3 浮层 / 4 响应式 / 5 富文本 / 6 控制字符 / 7 LaTeX / 8 Markdown）；`hud` 页当作**锚点**（0 左上 / 1 右上 / 2 左下 / 3 右下），`config` 页当作 **section 下标**，`chat` 与 `text-probe` 忽略 |
+| `--page-index=N` / `--page-indexes=0,1,…` | `playground` 子页下标（0 总览 / 1 单行文本 / 2 多行文本 / 3 浮层 / 4 响应式 / 5 富文本 / 6 控制字符 / 7 LaTeX / 8 Markdown）；`hud` 页当作**锚点**（0 左上 / 1 右上 / 2 左下 / 3 右下），`config` 页当作 **section 下标**，`chat` / `text-probe` / `glass` 忽略 |
 | `--size=WxH` / `--sizes=WxH,…` | 单档 / 分辨率矩阵（360P~2K 任意尺寸，渲染到自建 FBO，与窗口无关） |
 | `--out=path` | 输出 PNG；矩阵出图时按轴追加后缀：`-pg<页面名>`（多页面时）/ `-p<下标>` / `-th<外观档>` / `-fs<百分比>` / `-WxH`，各段只在对应轴存在多档时出现 |
 | `--actions="…"` / `--script=file` | 输入脚本（见下） |
@@ -203,6 +203,7 @@ build\headless\qz-shot.bat --page=hud --size=1920x1080 --debug
 | `chat` / `hud` | **逐像素相同**（实测 0/921600） | chat3 的 HUD 形态配色来自它自己的进程级色板 `ChatMarkdownSettings`（气泡底/正文/组头…），不读 runtime 默认主题；只有容器形态（输入屏打开时）走 `SceneThemes` |
 | `text-probe` | 无效 | 前景色写死，连安装都不做 |
 | `config` | **无效**（不接收） | 配置页在页壳树构建前安装自己的偏好信号（`ConfigThemePreference`，默认平面档）——主题对它是**配置内容**而非请求级环境量 |
+| `glass` | **变色**（实测 dark vs light 585339/1152000 像素不同） | 外壳/卡片表面唯一写入者是 `SceneSurfaceBinder`，配方取来源主题的 PANEL/GROUP；采样场色带与材质阶梯是被测样本，按契约保留显式取值 |
 
 出处：`HeadlessThemes` 的类注释记着这条边界与实测值。要用 `--theme` 看效果，请用 `playground` 或走主题系统的业务页面。
 
@@ -235,7 +236,7 @@ HUD 形态的堆叠高度上限是**视口高 × 0.5**（`hudMaxHeightRatio`）�
 出图含气泡、组头、markdown、行内公式、链接与自动换行。
 
 ```bat
-build\headless\qz-shot.bat --page=chat --size=1280x720 --out=out\chat.png
+build\headless\qz-shot-full.bat --page=chat --size=1280x720 --out=out\chat.png
 ```
 
 `--text` 是消息串，消息之间用 `;;` 分隔（不取 `|`：那是 Windows 命令行管道符），每条消息三选一：
@@ -251,6 +252,10 @@ build\headless\qz-shot.bat --page=chat --size=1280x720 --out=out\chat.png
 ```bat
 build\headless\qz-shot.bat --page=chat --text="Steve:**粗体** 与 `code`;;md:## 标题\n- 列表项" --out=out\chat.png
 ```
+
+**必须用完整集启动器**（`qz-shot-full.bat`）：chat3 内容树在方法体里使用 `net.minecraft.*`（`IChatComponent` 等），
+最小集类路径下装配会抛 `NoClassDefFoundError`、进程以**退出码 1** 收场（未捕获错误，不在退出码表契约内）。
+`hud` 页同理。
 
 两点注意：
 
@@ -320,6 +325,36 @@ build\headless\qz-shot.bat --page=config --page-indexes=0,1,2 --out=out\config-s
 目录无新增。后两条是补的：独立复核实测「把 `showSection` 改成空操作」「摘掉会话清理」时，
 只钉前两条的门禁**全绿**——即交付了三项能力却只守住一项。
 
+## 磨玻璃实验室（glass）
+
+`backdrop-filter` 观感验收页（`internal.devtools.glass.GlassLabHost`）：采样场色带 + 参数台滑杆 + 探针玻璃带 +
+诊断卡。它是**液态玻璃观感**的主验收面，零 `net.minecraft` 依赖，最小集即可跑。
+
+```bat
+build\headless\qz-shot.bat --page=glass --size=1280x900 --out=out\glass.png
+```
+
+- **尺寸建议 ≥ 1280×900**：实验室内容高约 788 px（1280 宽），720P 下底部诊断卡落到视口外，
+  输出里会出现 `outsideViewport=1`（是提示不是失败）。实测 1280×720 的 `bounds=0,0..1280,788`；
+- `--page-index` 对本页无意义（忽略）：实验室没有子页/分节；
+- **接收 `--theme`**：外壳/卡片表面唯一写入者是 `SceneSurfaceBinder`，配方取来源主题 PANEL/GROUP，换档真的变色；
+  采样场色带、玻璃 tint/亮边、材质阶梯是**被测样本**，按契约保留显式取值、不随主题变；
+- **参数台滑杆不能被 `--find` 找到**：滑杆的标签文本挂在非交互兄弟节点上（`r0/0/2/3` 是 `[non-interactive]`），
+  `--find=模糊半径` 命中 0 个。正确链路是 `--nodes=all` 取可命中节点地址 → `--center=<地址>` 取中心 → 输入脚本拖拽。
+  实测：`--center=r0/0/2/3/1/0` ⇒ `452,452`；`--actions="move 452 452; frame; down; move 540 452; frame; up; wait 6"`
+  ⇒ 标签「模糊半径 18」变「模糊半径 60」（同型可把材质档拖到 LiquidGlass）；
+- **诊断卡读的是本帧玻璃路径**（见「怎么读输出」的 `backdrop:` 行）——它是判断这张图的玻璃证据属于哪一档的入口。
+
+实测（1280×900，本机 RTX 5070 Ti / NVIDIA 610.74）：
+
+| 命令 | commands | colors | backdrop |
+|---|---|---|---|
+| `--page=glass`（默认外观） | 62 | 16336 | `path=shader requests=72` |
+| `--themes=liquid-glass-light` | 62 | 14373 | `path=shader requests=72` |
+| `--themes=solid-dark` | 62 | 15756 | `path=shader requests=8` |
+
+`solid-dark` 档请求数少是预期：实色档下多数表面不带滤镜配方，故只提交少量玻璃请求。
+
 ## 出图确定性
 
 **同一命令在同一台机器上逐像素可复现**（实测：相隔 73 秒的两次 `--page=hud` 出图差异 0 像素，
@@ -380,12 +415,20 @@ build\headless\qz-shot-full.bat --page=hud --clock=1735689600000 --out=out\hud-2
 [headless] commands: commands=62 [fill=0 surface=16 border=0 text=46/1050ch segments=0 image=0] … bounds=1,1..1279,717 outsideViewport=0
 [headless] output: …png (200031 bytes)
 [headless] self-check: ok 1280x720 ink=100.00% inkPx=921600 opaquePx=921600 meanAlpha=255.0 colors=1290 glError=0
+[headless] backdrop: path=shader requests=64 detail=blur=4, saturation=1.00, family=LIQUID_GLASS, material=DARK_ULTRA_THIN vibrancy=1.18 lens=0.21, …
 [headless] frames: 4/60
 [headless] elapsed: 615 ms
 ```
 
 - `commands`（命令面）与 `self-check`（像素面）是**两条独立证据**：命令说有绘制、像素说画出来了。只有一边成立即为设施故障，
   不是「UI 画得不好」；
+- `backdrop`：**本次渲染窗口的玻璃事实**。`path=shader` 是完整路径；`fixed-pipeline` / `tint-fallback` 是**降级档**
+  （前者只有多重采样模糊、无 vibrancy/亮边/噪点/液态折射，后者是 tint 兜底）；`none` 表示**本窗口最后一次
+  玻璃请求没有成功路径**——既可能一次请求都没发起，也可能是最后一次请求被策略/档位/几何/裁剪短路；
+  两者按同行 `requests=` 的**有无**区分（有 = 发生过请求、无 = 未发起；判定用请求计数差，见下条，避免把上一档的残留报成本档）。`detail` 段含 `rev=N` 等过程量，
+  但它们同样只由请求决定：**实测同命令多次运行该行逐字节相同**，可参与对拍；
+- 玻璃请求计数按**窗口差**判定：静态"最近一次路径"是最后值，批量同进程出图会把上一档的残留报成本档事实
+  （`--share-context --pages=glass,text-probe` 即可复现），故读数取 `UiRenderContext#getBackdropFilterInvocationCount()` 的前后差；
 - `outsideViewport>0`：有矩形命令完全落在视口外（小视口溢出提示，不判失败）；
 - `frames: N/上限`：等于上限说明未收敛（动画/时间源持续变化），不是错误但内容可能还在变；
 - 批量模式末尾有 `batch: N/M ok — page#0@1280x720=ok …` 汇总行。
@@ -399,6 +442,10 @@ build\headless\qz-shot-full.bat --page=hud --clock=1735689600000 --out=out\hud-2
 | 3 | 设施失败（诊断带阶段标签：能力探测 / scene 装配 / 帧推进 / 像素读回 / PNG 编码） |
 | 4 | 像素自检未通过，或批量中存在失败档位 |
 | 5 | **运行环境不具备**出图能力（natives 加载失败 / AWT 无窗口句柄能力 / GL 上下文建不起来）。诊断里带 `ENV-UNAVAILABLE` 行；处置是换 JDK 或加 Xvfb，不是查 UI |
+
+契约只覆盖 0/2/3/4/5。**用错启动器**（如用最小集跑 `chat` / `hud`）会得到未捕获的
+`NoClassDefFoundError: net/minecraft/...` 与**退出码 1**——那不在契约内，处置是换 `qz-shot-full.bat`
+（把未捕获 `Error` 纳入契约已登记为未做项，见规划 F38）。
 
 3 与 5 都是「没出成图」，但处置相反：3 要查设施 / UI，5 是这台机器没能力出图。
 测试侧据此分流（`HeadlessShotGate`）——5 跳过、3 / 4 红，不解析消息文本。
@@ -419,12 +466,15 @@ build\headless\qz-shot-full.bat --page=hud --clock=1735689600000 --out=out\hud-2
 | 出图完成但进程不退出 | 历史缺陷（GL 上下文挂在隐藏 AWT 容器上，未显式释放时 `System.exit` 停在 AWT 退出钩子）；现已由 `HeadlessShotMain` 出图后调 `GlOffscreenSurface.shutdownContext()` 处理。若复现请报障 |
 | 屏幕上出现窗口 / 抢焦点 | 不应发生（可见窗口峰值 0）。若复现，检查是否有人改回 `Display.create()` 直连路径，见「不弹窗」 |
 | 批量各档互相不一致 / 与单跑不一致 | 检查是否用了 `--share-context`：该模式下产物带字体 atlas 历史依赖（±1~5 微差）。默认的逐档独立进程模式已无此问题 |
+| 玻璃「只有模糊、没有质感」 | 先看 `backdrop:` 行：`path=fixed-pipeline` / `tint-fallback` 是**降级档**（无 vibrancy / 亮边 / 噪点 / 液态折射），`path=shader` 才是完整路径。历史事故：2026-09-02~09-18 `uiBackdropF.frag` 注释里混入中文，NVIDIA 编译器报 `error C0000: syntax error, unexpected $undefined`，玻璃**静默降级 16 天**；现由 `GlslSourceAsciiGuardTest`（源字符集）与 `HeadlessPageLinkageTest`（端到端路径）两条门禁守着 |
 | 两次出图像素不同 | 先确认命令逐字相同：`--clock=` 不同本就该不同（时间戳/动画轴变了），`--frames` 不同也会不同（动画进度不同）。同机同命令仍不同则是设施缺陷，带两份命令与产物报障 |
 
 ## 边界（不要据此下结论）
 
 - 出图**不代表**真机 MC 宿主 / Angelica / lwjgl3ify 上下文；
 - **同机同命令逐像素可复现**（时间已解耦，见「出图确定性」）；但**不作为跨机器 / 跨 GL 驱动 / 跨字体环境的金样** —— 那三个变量不在设施控制内；
+- **玻璃路径是环境事实、不是承诺**：本机实测 `--page=glass` 走 `shader`，换驱动/机型可能落到 `fixed-pipeline`
+  （只剩模糊）。`backdrop:` 行如实报告当次路径，**别拿一张图当跨机器金样**；
 - 不覆盖原版包装类禁令（Tessellator 等）一类问题；
 - 不经过 `LwjglInputSource` 的 poll 差分语义——headless 注入的是帧，桥内部的差分/边沿类缺陷不在覆盖范围内；
 - **chat3 已纳入**（`--page=chat`）：走的是生产同一入口 `ChatSceneController.buildContent`。

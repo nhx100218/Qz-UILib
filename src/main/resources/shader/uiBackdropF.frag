@@ -1,38 +1,38 @@
 #version 120
 
-// 抽头预算：宿主 UiBackdropShaderProgram 在 #version 之后注入 #define UIB_TAP_BUDGET <13|9>，
-// 下方抽头段按 #if UIB_TAP_BUDGET >= 13 选段（13 = 完整档，逐字节保留引入档位前的抽头代码；
-// 9 = 省电档，向日葵螺旋 9 抽头变体）。本 #ifndef 默认块不是给宿主准备的，而是保证资源被
-// 单独编译/离线检查时仍是完整档 13；宿主注入的 define 永远先于它，故不改变注入语义。
+// Tap budget: the host injects "#define UIB_TAP_BUDGET <13|9>" right after #version,
+// and the tap block below is selected by "#if UIB_TAP_BUDGET >= 13" (13 = full tier, byte-identical to the tap code from before tiers existed;
+// 9 = eco tier, the 9-tap sunflower-spiral variant). This #ifndef default block is not meant for the host: it keeps the resource
+// at full tier 13 when compiled standalone or checked offline; the host-injected define always precedes it, so injection semantics are unchanged.
 #ifndef UIB_TAP_BUDGET
 #define UIB_TAP_BUDGET 13
 #endif
 
-// UI 磨玻璃材质着色器。
+// UI frosted-glass material shader.
 //
-// 质感分层（对齐 iOS UIVisualEffectView 的材质构成，顺序不可交换）：
-//   1) 模糊：向日葵螺旋核（连续半径，消散光）；抽头数由 UIB_TAP_BUDGET 选段（13 完整档 / 9 省电档）
-//   2) vibrancy：亮度域保护式饱和提升（不是线性乘饱和度）
-//   3) 材质蒙层 tint：白/深色半透明叠加（在色彩校正之后）
-//   4) 亮度偏置 lift + 边缘亮边 + 内侧上缘柔光 / 下缘暗带
-//   5) 抗 banding 噪点：最后一步加性叠加，任何缩放之前
+// Material layering (mirrors iOS UIVisualEffectView composition; the order is not interchangeable):
+//   1) blur: sunflower-spiral kernel (continuous radii, kills stray light); tap count selected by UIB_TAP_BUDGET (13 full / 9 eco)
+//   2) vibrancy: luma-domain protected saturation boost (not a linear saturation multiply)
+//   3) material tint overlay: white/dark translucent layer (after colour correction)
+//   4) brightness lift + edge specular + inner top sheen / inner bottom shade
+//   5) anti-banding dither: final additive step, before any scaling
 //
-// 第三家族（liquidGlass 门控，在 1)~5) 之上增量叠加；关闭时折射偏移恒为 0、
-// 缘光调制系数恒为 1、厚度 tint 增量为 0，数值上与经典档一致）：
-//   6) Liquid Glass：边缘凸透镜折射（SDF 梯度偏置采样）+ 边缘厚度 tint 递增
-//      + 随动缘光（高光峰值沿边缘滑动到光源方向；MC 无陀螺仪，光源=鼠标）。
+// Third family (gated by liquidGlass, additive on top of 1)~5); when it is off the refraction offset is exactly 0,
+// the rim-light modulation is exactly 1 and the thickness-tint delta is 0 -- numerically identical to the classic tier):
+//   6) Liquid Glass: edge convex-lens refraction (SDF-gradient biased sampling) + edge thickness tint ramp
+//      + moving rim light (the highlight peak slides along the edge toward the light source; MC has no gyroscope, so light = mouse).
 //
-// 色空间口径：Minecraft 帧缓冲是 sRGB 编码但全程按线性值混合，本 shader 沿用既有
-// 口径直接处理 framebuffer 原值，不做 sRGB<->linear 往返（往返会让灰阶中点掉到
-// 0.47，与原版 UI 整体发暗）。下面所有经验系数都在该口径下取值。
+// Colour-space contract: the Minecraft framebuffer is sRGB-encoded but everything is mixed linearly; this shader keeps that
+// contract and works on raw framebuffer values with no sRGB<->linear round trip (the round trip drops the grey midpoint to
+// 0.47 and darkens the whole vanilla UI). Every empirical coefficient below is calibrated in that space.
 //
-// 兼容性红线：只用 GLSL 1.20 内建函数。texture2Dbias 属 ARB_shader_texture_lod
-// （2009 扩展，非 1.20 内建），依赖它会在扩展缺失的机器上让整个 shader 编译失败、
-// 静默退回固定管线，比不加更糟；且大半径已由快照 downsample + separable filter pass
-// 预降采样，mip 偏置本身冗余。
+// Compatibility red line: GLSL 1.20 built-ins only. texture2Dbias belongs to ARB_shader_texture_lod
+// (a 2009 extension, not a 1.20 built-in); depending on it makes the whole shader fail to compile on machines without that
+// extension and silently fall back to the fixed pipeline, which is worse than not using it. Large radii are already
+// pre-downsampled by the snapshot downsample + separable filter pass, so a mip bias is redundant anyway.
 //
-// iosMaterial <= 0.5 时退回"线性饱和度乘子"的旧语义，且不叠加 tint / 亮边 / 噪点，
-// 保证未显式采用材质档的既有调用方观感不被悄悄改变。
+// iosMaterial <= 0.5 falls back to the old "linear saturation multiplier" semantics and adds no tint / specular / dither,
+// so existing callers that never opted into material tiers do not silently change appearance.
 
 varying vec2 texCoord;
 varying vec2 panelUv;
@@ -64,13 +64,13 @@ vec3 applySaturation(vec3 color, float amount) {
     return clamp(gray + (color - gray) * amount, 0.0, 1.0);
 }
 
-// iOS vibrancy：亮度域保护式饱和提升。
+// iOS vibrancy: luma-domain protected saturation boost.
 //
-// 只乘饱和度会让暗部与中间调一起吃色、高光处直接 clamp 偏色，这正是"糊一层彩"
-// 廉价感的来源。按 luma 加权：暗部（本口径下 luma <= 0.224）完全保持原样，
-// 越亮吃得越多——通透感来自"该饱和的地方才饱和"。
-// t = 1.289*L - 0.289 是线性域等价式 1.889*L - 0.889 在帧缓冲原值口径下的拟合。
-// vibrancy = 1.0 时乘子 k 恒为 1，严格恒等，便于逐档 A/B 比对。
+// Multiplying saturation alone tints shadows and mid-tones together and clips highlights off-colour -- exactly the cheap
+// "colour washed over it" feel. Weight by luma: shadows (luma <= 0.224 in this space) stay untouched and
+// the brighter the pixel the more saturation it takes -- clarity comes from saturating only what should be saturated.
+// t = 1.289*L - 0.289 is the linear-domain form 1.889*L - 0.889 fitted for raw-framebuffer values.
+// With vibrancy = 1.0 the multiplier k is exactly 1 (strict identity), which keeps per-tier A/B comparison honest.
 vec3 applyVibrancy(vec3 color, float amount) {
     float luma = dot(color, vec3(0.2126, 0.7152, 0.0722));
     float t = clamp(1.289 * luma - 0.289, 0.0, 1.0);
@@ -79,8 +79,8 @@ vec3 applyVibrancy(vec3 color, float amount) {
     return clamp(gray + (color - gray) * k, 0.0, 1.0);
 }
 
-// xy 为屏幕坐标外法线（y 向下），z 为覆盖率使用的有符号距离。
-// 只在圆弧约束比已有边界更近时替换，保证 mask、折射和缘光使用同一轮廓。
+// xy is the screen-space outward normal (y points down), z is the signed distance used for coverage.
+// A corner arc replaces an existing edge only when it is nearer, so mask, refraction and rim light share one contour.
 vec3 applyCornerConstraint(vec3 geometry, vec2 fromCenter, float radius) {
     float radialLength = length(fromCenter);
     float distance = radialLength - radius;
@@ -89,9 +89,9 @@ vec3 applyCornerConstraint(vec3 geometry, vec2 fromCenter, float radius) {
     return geometry;
 }
 
-// 半径已由宿主按相邻边长度归一；合法的单个大圆角可以超过短边一半。
-// 四角顺序：左上、右上、右下、左下。每个角区独立判断，不能按中心象限选角。
-// 零圆角直接沿最近直边折射；内切矩形近似在零圆角时会令整块面板的法线消失。
+// Radii are pre-normalised by the host against adjacent edge lengths; a legal single large radius may exceed half the short edge.
+// Corner order: top-left, top-right, bottom-right, bottom-left. Each corner region is decided independently, never by centre quadrant.
+// Zero radius refracts along the nearest straight edge; an inscribed-rectangle approximation makes the normal vanish for the whole panel.
 vec3 roundedPanelGeometry(vec2 p, vec2 size, vec4 radii) {
     vec3 geometry = vec3(-1.0, 0.0, -p.x);
     if (p.x - size.x > geometry.z) geometry = vec3(1.0, 0.0, p.x - size.x);
@@ -108,7 +108,7 @@ vec3 roundedPanelGeometry(vec2 p, vec2 size, vec4 radii) {
     return geometry;
 }
 
-// 廉价 hash 噪声：不用 sin 做 hash（各驱动 sin 实现差异会让噪声分布随硬件变化）。
+// Cheap hash noise: no sin-based hash (driver-specific sin implementations would make the noise distribution hardware-dependent).
 float hashNoise(vec2 p) {
     vec3 p3 = fract(vec3(p.xyx) * 0.1031);
     p3 += dot(p3, p3.yzx + 33.33);
@@ -116,92 +116,92 @@ float hashNoise(vec2 p) {
 }
 
 void main(void) {
-    // 核能量契约：13 抽头（中心 + 12 个向日葵螺旋抽头）权重和恒为 1（/1000 整数化），保证磨玻璃
-    // 是"亮度保持"操作。柔化提交 e5a6b2ae 重写核时权重和漂移到 1.12，导致磨玻璃
-    // 整体过曝 12%、高光处 clamp 偏色（旧核历史和为 1.02，证明归一是本意而非风格
-    // 选择）；2026-09-01 混合语义特勘修复，权重和由 UiBackdropKernelEnergyTest 以
-    // 源码契约锚定（抽头数 13 + 和为 1），改核必须同步保持。
+    // Kernel energy contract: the 13 taps (centre + 12 sunflower-spiral taps) always sum to 1 (/1000 integer form), which keeps frosted glass a
+    // "luminance-preserving" operation. The softening commit e5a6b2ae rewrote the kernel and drifted the sum to 1.12, over-exposing
+    // frosted glass by 12% and clipping highlights off-colour (the older kernel summed to 1.02, proving normalisation was the intent
+    // rather than a style choice); fixed on 2026-09-01, and the sum is anchored by UiBackdropKernelEnergyTest against the
+    // source contract (13 taps + sum = 1). Any kernel change must keep both.
     //
-    // 核形状演进（2026-09-02 散光调优）：规则十字+对角 -> 双半径 Poisson 盘 -> 向日葵螺旋。
-    // 前两版散光（大半径下"星星点点"如散光眼）的数学根源是抽头半径只有离散几档：
-    // 双半径盘 12 个外圈抽头挤在 r≈0.45 与 r≈0.9 两个环上，模糊读作"中心 + 两亮环"；
-    // 旋转是刚体变换救不了径向分层（环旋转对称，转了等于没转）。向日葵螺旋
-    // （r=sqrt(i/12)*1.6 面积均匀、角步进黄金角 2.39996 rad）让 13 个抽头落在 13 个
-    // 连续半径上、角向黄金分布，高斯权重按半径单调衰减——径向能量摊平，亮环消失；
-    // 螺旋残留的角向臂结构恰由下面的逐像素旋转打散（对双半径环旋转无效，对螺旋有效）。
-    // 0.98 为抽头半径补偿，按**加权 RMS 半径**校准（决定糊度的是积分量而非极值）：
-    // 螺旋核未补偿 RMS=0.9294，乘 0.98 后 0.9108，与旧规则核基准 0.91148 差 -0.07%，
-    // 保持作者侧 blurRadius 观感口径。该 RMS 由核守卫断言锁定，改核会静默改变模糊
-    // 强度，故必须在契约里同步。
+    // Kernel shape evolution (2026-09-02 stray-light tuning): regular cross+diagonal -> two-radius Poisson disc -> sunflower spiral.
+    // The stray light of the first two versions (a "starry" look at large radii, like astigmatism) came from tap radii having only a few discrete steps:
+    // the two-radius disc squeezed its 12 outer taps onto r~0.45 and r~0.9 rings, so the blur read as "centre + two bright rings";
+    // rotation is a rigid transform and cannot fix radial banding (a ring is rotationally symmetric, so rotating it changes nothing). The sunflower spiral
+    // (r=sqrt(i/12)*1.6 for equal area, golden-angle step 2.39996 rad) puts the 13 taps on 13
+    // continuous radii with a golden-angle distribution and Gaussian weights decaying monotonically with radius -- radial energy flattens out and the bright rings vanish;
+    // the residual angular arm structure of the spiral is exactly what the per-pixel rotation below breaks up (rotation is useless for rings but works on a spiral).
+    // 0.98 is the tap-radius compensation, calibrated against the **weighted RMS radius** (blur strength is decided by the integral, not the extreme):
+    // the uncompensated spiral kernel has RMS=0.9294, 0.98 brings it to 0.9108, only -0.07% off the old regular-kernel baseline 0.91148,
+    // which preserves the author-side blurRadius feel. That RMS is locked by the kernel guard assertion: changing the kernel silently changes blur
+    // strength, so the contract has to be updated in step.
     vec2 radiusStep = texelSize * clamp(blurRadius, 0.0, 128.0) * 0.98;
 
-    // 面板几何必须先于采样计算：Liquid Glass 的透镜折射要偏置采样坐标。
-    // 覆盖率、折射和缘光共用完整四角轮廓的距离与解析法线。
+    // Panel geometry must be computed before sampling: Liquid Glass lens refraction biases the sampling coordinates.
+    // Coverage, refraction and rim light share the distance and analytic normal of the full four-corner contour.
     vec2 halfSize = max(panelSizePx * 0.5, vec2(1.0, 1.0));
     vec3 panelGeometry = roundedPanelGeometry(panelUv * panelSizePx, panelSizePx, cornerRadii);
     float signedDistance = panelGeometry.z;
     float edgeDistance = max(-signedDistance, 0.0);
-    // 一个最终屏幕像素的覆盖率过渡；不随 HUD 放大成数个 logical 像素的台阶。
-    // fwidth 同时适配祖先变换；在任何动态分支/丢弃之前计算导数。
+    // Coverage transition of one final screen pixel; it must not step across several logical pixels when the HUD is scaled up.
+    // fwidth also tracks ancestor transforms; derivatives are computed before any dynamic branch or discard.
     float edgeWidth = max(fwidth(signedDistance), 0.0001);
     float coverage = clamp(0.5 - signedDistance / edgeWidth, 0.0, 1.0);
 
-    // 按像素旋转整个采样盘：固定核在大半径下会让每个像素呈现同一套"星星点点"，
-    // 叠加起来读作塑料感/蜡感。给每个像素一个确定性的盘旋转角，把结构化伪影打散成
-    // 高频噪声（再被最后的抖噪掩盖）。关键是它只依赖 gl_FragCoord、不含时间项，
-    // 因此静止画面不会闪烁——优于抖动偏移量或引入帧号相位。
-    // 旧语义路径（kernelJitter=0）保持恒等基，升级前后逐像素一致。
+    // Rotate the whole sampling disc per pixel: with a fixed kernel every pixel shows the same "starry" pattern at large radii,
+    // which reads as plastic or waxy once accumulated. Giving each pixel a deterministic disc rotation angle scatters the structured
+    // artefact into high-frequency noise (hidden again by the final dither). Crucially it depends only on gl_FragCoord with no time term,
+    // so a static frame never flickers -- better than jittering the offset or introducing a frame-number phase.
+    // The old-semantics path (kernelJitter=0) stays an identity basis, pixel-identical before and after the upgrade.
     mat2 kernelBasis = mat2(1.0, 0.0, 0.0, 1.0);
     if (kernelJitter > 0.5) {
-        // 偏移采样域再取 hash：与最终抖噪用的 hashNoise(gl_FragCoord.xy) 解耦，
-        // 否则同一像素的旋转角与噪声值相关，会露出规则性花纹。
+        // Hash the offset sampling domain so it is decoupled from the hashNoise(gl_FragCoord.xy) used by the final dither;
+        // otherwise the rotation angle and the noise value of the same pixel correlate and reveal a regular pattern.
         float kernelAngle = hashNoise(gl_FragCoord.xy + vec2(37.0, 91.0)) * 6.28318530718;
         float ka = cos(kernelAngle);
         float kb = sin(kernelAngle);
         kernelBasis = mat2(ka, kb, -kb, ka);
     }
 
-    // Liquid Glass 边缘折射：圆角矩形像一块有厚度的凸缘玻璃——靠近边缘的
-    // 背景被"抽向轮廓外"再压缩进缘带，产生透镜感（官方 Liquid Glass 区别于
-    // 经典磨砂的决定性特征）。沿覆盖率轮廓的解析外法线偏移采样中心，
-    // 越贴边推得越远；中心区由 lensBevel 归零，保持平坦。
-    // lensShift 是 UV 空间偏移：refraction 以纹理素计（宿主已把作者侧屏幕像素数
-    // 除以 downsampleFactor），乘 texelSize 换算到 UV，与 radiusStep 同口径，
-    // 屏幕观感不随快照缩放档位跳变。
+    // Liquid Glass edge refraction: the rounded rect behaves like a thick beveled glass edge -- background near the edge is
+    // "pulled outward" past the contour and compressed into the rim band, producing the lens feel (the decisive difference
+    // between official Liquid Glass and classic frosted glass). Sampling centres are offset along the analytic outward normal
+    // of the coverage contour, pushed further the closer to the edge; the centre region is zeroed by lensBevel and stays flat.
+    // lensShift is a UV-space offset: refraction is counted in texels (the host already divided the author-side screen-pixel count
+    // by downsampleFactor) and multiplied by texelSize to convert to UV, the same convention as radiusStep, so the
+    // on-screen feel does not jump when the snapshot downsample tier changes.
     float lensBevel = 0.0;
     vec2 sdfGradient = vec2(0.0);
     vec2 lensShift = vec2(0.0);
-    // 缘带宽度提到外层作用域：液态镜面环带的宽度要按它的比例取（见下方 border 段）。
+    // Rim width is hoisted to the outer scope: the liquid specular band width is taken as a ratio of it (see the border section below).
     float lensBandPx = 0.0;
     if (liquidGlass > 0.5) {
-        // 缘带宽度：比例 0.35 为主，上下限只兜极端。上限 28px 防大面板整块被当成边缘
-        // （短边 164px 若按 0.85 比例会算出 70px 缘带，折射与厚度 tint 摊薄到全表面，
-        // 观感退化回普通磨砂——Liquid Glass 的辨识度恰恰来自"只有边缘鼓"）。
-        // 下限从 8px 降到 3px 是真机"液态看不出"的根因：聊天气泡短边仅 28px、半高 14，
-        // 8px 下限把缘带撑到占满半高的 57%，bevel 在气泡内部几乎恒为 1 —— 而"整体一致
-        // 位移"是不可见的（等价于平移采样坐标），梯度才是透镜本身。下限再小也必须留
-        // 平坦中心，故另用 shortHalf*0.5 兜底：任何尺寸的面板中心区 bevel 必为 0。
+        // Rim width: ratio 0.35 dominates and the clamps only cover extremes. The 28px upper bound stops a large panel from being all edge
+        // (a 164px short edge at ratio 0.85 would give a 70px rim, thinning refraction and thickness tint over the whole surface
+        // until the look degrades back to plain frosted glass -- Liquid Glass is recognisable precisely because only the edge bulges).
+        // Lowering the floor from 8px to 3px is the root cause of "the liquid is invisible" on device: a chat bubble has a 28px short edge, half-height 14,
+        // and the 8px floor pushed the rim to 57% of the half-height, making bevel almost constantly 1 inside the bubble -- while a "uniform
+        // displacement" is invisible (it is equivalent to translating the sampling coordinates); the gradient is the lens. The floor must stay as small as
+        // possible while keeping a flat centre, hence the extra shortHalf*0.5 clamp: for any panel size the centre bevel is exactly 0.
         float lensShortHalf = min(halfSize.x, halfSize.y);
         lensBandPx = min(clamp(lensShortHalf * 0.35, 3.0, 28.0), lensShortHalf * 0.5);
         lensBevel = 1.0 - smoothstep(0.0, lensBandPx, edgeDistance);
         lensBevel = lensBevel * lensBevel;
         sdfGradient = panelGeometry.xy;
-        // 屏幕 y 向下，快照 V 向上；只在转采样 UV 时翻转 y。
-        // 光向仍用屏幕坐标法线，不能跟随纹理翻转。
+        // Screen y grows downward and snapshot V grows upward; flip y only when converting to sampling UV.
+        // The light direction still uses the screen-space normal and must not follow the texture flip.
         lensShift = vec2(sdfGradient.x, -sdfGradient.y) * lensBevel * refraction * texelSize;
     }
 
-    // 零模糊保留折射/材质，但只采样一次；不得把半径夹到 1 或重复累加同一点。
+    // Zero blur keeps refraction/material but samples once; never clamp the radius to 1 or accumulate the same point repeatedly.
     vec4 blurred = texture2D(mainTex, texCoord + lensShift);
     if (blurRadius > 0.0) {
-        // 抽头段按 UIB_TAP_BUDGET 选段（define 由宿主注入在 #version 之后）：
-        //   13 档 = 引入档位前逐字节同一段向日葵螺旋 13 抽头代码，权重和 1000/1000；
-        //    9 档 = 变体核（中心 + 8，r=sqrt(i/8)*1.6、黄金角 2.39996，权重同为整数 /1000）。
-        // 9 档口径：权重和仍精确为 1000/1000（亮度保持契约不变）；最远抽头 1.6001 步 vs 13 档
-        // 1.5996 步（覆盖半径同量级）；加权 RMS 半径 0.9288 vs 0.9295，乘 radiusStep 的 0.98
-        // 抽头半径补偿后等效模糊强度偏差 -0.07%（仍是同一强度的模糊，只是抽头更少）；
-        // 片元采样次数 9/13 = -30.8%。两段权重/半径由 UiBackdropKernelEnergyTest 钉住，
-        // 数值出处 = temp/perf-impl-render/kernel-9tap.py（Python 复算）+ kernel-9tap.json。
+        // Tap block selected by UIB_TAP_BUDGET (the define is injected by the host after #version):
+        //   13 tier = byte-identical sunflower-spiral 13-tap code from before tiers existed, weight sum 1000/1000;
+        //    9 tier = variant kernel (centre + 8, r=sqrt(i/8)*1.6, golden angle 2.39996, weights likewise integers /1000).
+        // 9-tap tier contract: the weight sum is still exactly 1000/1000 (luminance-preserving contract unchanged); farthest tap 1.6001 steps vs 13-tier
+        // 1.5996 steps (same order of coverage radius); weighted RMS radius 0.9288 vs 0.9295; after the 0.98 tap-radius
+        // compensation the equivalent blur strength differs by -0.07% (same blur strength, fewer taps);
+        // fragment samples 9/13 = -30.8%. Both tiers' weights/radii are pinned by UiBackdropKernelEnergyTest,
+        // values derived in temp/perf-impl-render/kernel-9tap.py (Python recomputation) + kernel-9tap.json.
 #if UIB_TAP_BUDGET >= 13
         blurred *= (161.0 / 1000.0);
 
@@ -236,80 +236,80 @@ void main(void) {
 
     vec3 color;
     if (iosMaterial > 0.5) {
-        // 材质分级顺序：vibrancy -> tint 蒙层 -> 亮度偏置。先做色彩校正再叠蒙层，
-        // 才能既通透又有 iOS 那层"奶白"；反向会把 tint 一起饱和掉。
+        // Material grading order: vibrancy -> tint overlay -> brightness lift. Colour correction first, overlay second,
+        // which is what makes it both clear and iOS-milky; the reverse would saturate the tint as well.
         color = applyVibrancy(blurred.rgb, vibrancy);
-        // 白 tint 必须按背景亮度门控，否则暗背景必发灰：mix(c, 1, a) 把黑场从 0 抬到
-        // a（本档 a=0.2），等于压掉 20% 动态范围——这就是"洗成脏灰"的数学本质，
-        // 不是参数问题。深色 tint 往下压不伤黑场，无需门控。iOS 的真实做法是在暗背景
-        // 上自动改用 dark material（trait 感知），这里用亮度门控近似同一行为：
-        // 暗背景几乎不叠白（保持通透），亮背景照常吃奶白（保住文字可读性）。
-        // 方向从 tint 自身亮度推出，零新增 uniform。
+        // The white tint must be gated by background luma, otherwise a dark background necessarily turns grey: mix(c, 1, a) lifts black from 0 to
+        // a (a=0.2 in this tier), i.e. it throws away 20% of the dynamic range -- that is the mathematical essence of "washed-out grey",
+        // not a parameter problem. A dark tint only pushes down and does not hurt blacks, so it needs no gate. iOS really switches to a dark
+        // material on dark backgrounds (trait aware); here a luma gate approximates that behaviour:
+        // dark backgrounds get almost no white (stays clear) and bright backgrounds keep the milkiness (text stays readable).
+        // The direction comes from the tint's own luma, adding no uniform.
         float tintLuma = dot(materialTint.rgb, vec3(0.2126, 0.7152, 0.0722));
         float backdropLuma = dot(color, vec3(0.2126, 0.7152, 0.0722));
         float whiteGate = mix(1.0, smoothstep(0.05, 0.55, backdropLuma), step(0.5, tintLuma));
-        // 厚度 tint 是基础材质吸收率的相对增量，不能作为独立 alpha 直接叠加。
-        // 薄深色大面板的折射带很宽，独立深色蒙层会把整圈染成黑框；
-        // 小按钮的倒角高光会掩盖它，不能只用按钮验收面板材质。
-        // 背景亮度门控继续保护暗部；中心 lensBevel=0、经典档 edgeTint=0 均保持原色。
+        // Thickness tint is a relative increase of the base material's absorption and must not be composited as an independent alpha.
+        // A thin dark large panel has a wide refraction band, and an independent dark overlay would paint the whole rim black;
+        // on small buttons the bevel highlight hides it, so buttons alone are not a valid panel-material acceptance test.
+        // The luma gate keeps protecting shadows; centre lensBevel=0 and classic-tier edgeTint=0 both keep the original colour.
         float thicknessGate = smoothstep(0.15, 0.55, backdropLuma);
         float thicknessAlpha = materialTint.a * edgeTint * lensBevel * thicknessGate;
         color = mix(color, materialTint.rgb,
                 clamp((materialTint.a + thicknessAlpha) * whiteGate, 0.0, 1.0));
-        // 亮度补偿同受门控：不门控的话 tint 不抬黑场、lift 却抬，灰底照样被洗白。
+        // The brightness compensation is gated too: without the gate the tint does not lift blacks while the lift does, so a grey background is washed out anyway.
         color = color + materialLift * whiteGate;
     } else {
         color = applySaturation(blurred.rgb, saturation);
     }
 
-    // ── 边缘亮边：两条路径形态不同，且这是刻意的 ──────────────────────────────
-    // 经典档：iOS 导航栏那种 1.5px 发丝描边，亮边集中在顶缘、向两侧衰减
-    //   （SDF 距离算带宽，圆角处准确，旧 min(到直边) 近似会把弧段亮边裁掉）。
-    // 液态档：**峰值内移的高斯环带 + 对向次高光**，形态取自一手参考 WebGlass
-    //   docs/specular.md + docs/tokens.md（--wg-specular-edge 0.05 / --wg-specular-width
-    //   0.25 / --wg-specular-back 0.20，且明确"counter-highlight 恒锁在 light-angle+180°"）。
+    // -- Edge specular: the two paths differ in shape, deliberately -----------------------------------
+    // Classic tier: the 1.5px hairline of an iOS navigation bar, highlight concentrated on the top edge and decaying to the sides
+    //   (band width from the SDF distance, exact at corners; the old min(distance to straight edge) approximation cut the arc segments off).
+    // Liquid tier: **Gaussian band with the peak moved inward + counter highlight**, shape taken from the first-hand WebGlass reference
+    //   docs/specular.md + docs/tokens.md (--wg-specular-edge 0.05 / --wg-specular-width
+    //   0.25 / --wg-specular-back 0.20, and it states explicitly that the counter-highlight stays locked at light-angle+180 degrees).
     float borderBand = 1.0 - smoothstep(0.0, 1.5, edgeDistance);
     float borderWeight = borderBand * mix(0.30, 1.0, 1.0 - clamp(panelUv.y, 0.0, 1.0));
     if (liquidGlass > 0.5) {
-        // 真机反馈「边缘生硬」的根因：上一版液态档误用了经典档的形态——
-        //   1 - smoothstep(0, 2px, d) 的**峰值正好压在物理轮廓上**，且只有 2px 宽。
-        // 实测该处 1px 内亮度 42 -> 145（蓝通道直接 clip 到 255），读起来就是"沿轮廓
-        // 画了一条白线"，而不是"玻璃在边缘鼓起来"。参考实现的两个机制恰好各自治一半：
-        //   (a) specular-edge：把峰值**往里挪**，让轮廓线上不是最亮点 -> 消除描边感；
-        //   (b) specular-width：环带取 bezel 的比例（默认 0.25）而不是固定 2px -> 同样的
-        //       能量摊到更宽的肩部上，"软"来自分布而不是降低总亮度。
-        // 高斯而不是 smoothstep：后者在带宽端点斜率为 0 但峰值仍在边缘，前者天然双侧肩部。
+        // Root cause of the on-device "hard edge" report: the previous liquid tier wrongly reused the classic shape --
+        //   1 - smoothstep(0, 2px, d) puts its **peak exactly on the physical contour**, only 2px wide.
+        // Measured there: luma 42 -> 145 within 1px (blue clipped straight to 255), which reads as "a white line
+        // drawn along the contour" rather than "glass bulging at the edge". The reference implementation has two mechanisms, each solving half:
+        //   (a) specular-edge: move the peak **inward** so the contour line is not the brightest point -> removes the outline feel;
+        //   (b) specular-width: take the band as a ratio of the bezel (default 0.25) instead of a fixed 2px -> the same
+        //       energy spread over a wider shoulder, so "soft" comes from distribution rather than lower total brightness.
+        // Gaussian instead of smoothstep: the latter has zero slope at the band end but still peaks on the edge, the former has natural shoulders.
         float specBandPx = max(2.5, lensBandPx * 0.25);
         float specT = (edgeDistance - specBandPx * 0.35) / specBandPx;
         float specLobe = exp(-4.0 * specT * specT);
-        // 随动缘光：MC 无陀螺仪，宿主以鼠标为光源（官方语义 lighting responds to
-        // device motion）。pow 1.5 让光斑有方向但不缩成一点。
+        // Moving rim light: MC has no gyroscope, the host uses the mouse as the light source (official semantics: lighting responds to
+        // device motion). pow 1.5 gives the highlight direction without shrinking it to a point.
         float nDotL = dot(sdfGradient, lightDir);
         float primary = pow(max(nDotL, 0.0), 1.5);
-        // 对向次高光：真实玻璃背光侧那条弱反光。缺了它，背光缘就只剩"死"和"暗"
-        // （上一轮「黑黑的」有一半是这个）。强度按参考默认 0.20。
+        // Counter highlight: the weak reflection on the back-lit side of real glass. Without it the back-lit rim is only "dead" and "dark"
+        // (half of the earlier "black and lustreless" report). Strength uses the reference default 0.20.
         float counter = 0.20 * pow(max(-nDotL, 0.0), 1.5);
-        // 0.25 底光：非受光方位也保留一丝抛光感，避免某些角度整圈无光。
+        // 0.25 ambient floor: keeps a hint of polish even on unlit sides, so no angle ends up completely dark.
         borderWeight = specLobe * (0.25 + primary + counter);
     }
 
-    // 内侧上缘柔光 + 内侧下缘暗带：镜面反射与厚度感的近似（pow3 让能量贴住边缘）。
+    // Inner top sheen + inner bottom shade: approximation of specular reflection and thickness (pow3 keeps energy at the edge).
     float topGlow = pow(1.0 - clamp(panelUv.y, 0.0, 1.0), 3.0) * innerLightTop;
     float bottomShade = pow(clamp(panelUv.y, 0.0, 1.0), 3.0) * innerShadowBottom;
 
     color = color + vec3(topGlow) - vec3(bottomShade) + vec3(borderWeight * edgeHighlight);
 
-    // 抗 banding 噪点：必须是大半径模糊之后、任何缩放或 gamma 之前的最后一步加性
-    // 叠加。8-bit 帧缓冲上平滑渐变必然出现量化色带。取 TPDF（两个独立均匀源之和，
-    // 三角分布）：同峰值下对渐变的去带优于均匀噪声，Zed 的渐变 dither PR 即此法。
-    // 第二路 hash 走转置+偏移域，防两路同源相关、退化回均匀分布。
+    // Anti-banding dither: must be the final additive step, after the large-radius blur and before any scaling or gamma.
+    // An 8-bit framebuffer necessarily shows quantisation bands on a smooth gradient. TPDF (sum of two independent uniform sources,
+    // triangular distribution) removes gradient bands better than uniform noise at equal peak; Zed's gradient dither PR uses this method.
+    // The second hash uses a transposed+offset domain so the two paths cannot correlate and degrade back to uniform.
     if (noiseAmount > 0.0) {
         float n = hashNoise(gl_FragCoord.xy)
                 + hashNoise(gl_FragCoord.yx * 1.03 + vec2(7.0, 13.0)) - 1.0;
         color = clamp(color + n * noiseAmount, 0.0, 1.0);
     }
 
-    // 首遍 coverage 控制 RGB 替换；独立层第二遍只补写原快照 alpha，RGB 写掩码关闭。
+    // First pass coverage controls RGB replacement; the isolated-layer second pass only rewrites the original snapshot alpha with the RGB write mask off.
     float outputAlpha = mix(coverage, blurred.a * coverage, sourceAlphaPass);
     gl_FragColor = vec4(clamp(color, 0.0, 1.0), outputAlpha);
 }

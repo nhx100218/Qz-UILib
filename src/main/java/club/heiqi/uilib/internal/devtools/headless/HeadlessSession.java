@@ -16,12 +16,14 @@ import club.heiqi.config.ui.ConfigScreen;
 import club.heiqi.uilib.config.modern.ModernConfigAssembly;
 import club.heiqi.uilib.config.modern.QzUiLibModernSchema;
 import club.heiqi.uilib.font.config.FontConfig;
+import club.heiqi.uilib.internal.devtools.glass.GlassLabHost;
 import club.heiqi.uilib.internal.devtools.playground.TestPlaygroundHost;
 import club.heiqi.uilib.ui.diagnostic.UiPerformanceMonitor;
 import club.heiqi.uilib.ui.env.UiEnvironment;
 import club.heiqi.uilib.ui.host.UiHostRenderSupport;
 import club.heiqi.uilib.ui.render.PaintContextCompositor;
 import club.heiqi.uilib.ui.render.UiMainLayerSnapshotService;
+import club.heiqi.uilib.ui.render.UiRenderContext;
 import club.heiqi.uilib.ui.scene.UiSurface;
 import club.heiqi.uilib.ui.scene.layout.AnchorRect;
 import club.heiqi.uilib.ui.scene.layout.LayoutBox;
@@ -166,8 +168,9 @@ public final class HeadlessSession implements AutoCloseable {
      * 页面来源：把页面标识映射为宿主。
      *
      * <p>当前提供 {@code playground}（测试场地首页）、{@code text-probe}（单行文本）、
-     * {@code chat}（chat3 内容树）、{@code hud}（HUD 宿主装配：外壳 + 锚定放置）与
-     * {@code config}（配置页，{@code pageIndex} = section 下标，见 {@link #createConfigHost}）；
+     * {@code chat}（chat3 内容树）、{@code hud}（HUD 宿主装配：外壳 + 锚定放置）、
+     * {@code config}（配置页，{@code pageIndex} = section 下标，见 {@link #createConfigHost}）与
+     * {@code glass}（磨玻璃实验室，backdrop-filter 观感验收页）；
      * 后续页面在此登记，不允许调用方自行 new 宿主绕过会话生命周期。</p>
      *
      * <p>返回类型是 {@link UiSurface} 而非 {@code AbstractSceneHostWidget}：页面宿主有两种形态——
@@ -218,9 +221,15 @@ public final class HeadlessSession implements AutoCloseable {
             return createConfigHost(request, inputSource, environment);
         }
 
+        if (HeadlessRequest.GLASS_PAGE.equals(request.pageId())) {
+            // 外观档经构造注入：实验室外壳/卡片的表面配方在建树期捕获主题信号对象（见 GlassLabHost 构造 javadoc）。
+            GlassLabHost glassHost = new GlassLabHost(inputSource, environment, theme);
+            return new HostBinding(glassHost, glassHost.runtime());
+        }
+
         throw new HeadlessFailure(HeadlessFailure.Stage.CAPABILITY,
                 "未知页面：" + request.pageId()
-                        + "（当前提供 playground / text-probe / chat / hud / config）");
+                        + "（当前提供 playground / text-probe / chat / hud / config / glass）");
     }
 
     /**
@@ -366,6 +375,9 @@ public final class HeadlessSession implements AutoCloseable {
     public HeadlessArtifact capture() {
         ensureOpen();
         long startedNanos = System.nanoTime();
+        // 玻璃请求计数基准：本次窗口内是否真的发生过 backdrop 滤波，靠它前后相减判定
+        // （静态「最近一次路径」是最后值，批量同进程出图会把上一档的残留报成本档事实）。
+        long backdropStart = UiRenderContext.getBackdropFilterInvocationCount();
         int glError = 0;
         int[] argb = null;
         int lastFingerprint = 0;
@@ -424,8 +436,14 @@ public final class HeadlessSession implements AutoCloseable {
         // 此处照旧读请求时，perf 行仍会打印（内容全 0），出图验收单测因此失效（独立复核实测）。
         String performance = environment.diagnostics().debugEnabled()
                 ? monitor.getRuntimeStats().toString() : null;
+        long backdropRequests = UiRenderContext.getBackdropFilterInvocationCount() - backdropStart;
+        String backdrop = backdropRequests <= 0
+                ? "none（本次渲染窗口内未发起 backdrop 滤波请求）"
+                : "path=" + UiRenderContext.getLastBackdropFilterRenderPath().getLabel()
+                        + " requests=" + backdropRequests
+                        + " detail=" + UiRenderContext.getLastBackdropFilterDetail();
         return new HeadlessArtifact(request, capabilities, report, drawSummary, request.output(), bytes,
-                elapsedMillis, renderedFrames, inputSource.device().describe(), performance);
+                elapsedMillis, renderedFrames, inputSource.device().describe(), performance, backdrop);
     }
 
     /** @return 本次会话的能力快照 */
@@ -717,11 +735,8 @@ public final class HeadlessSession implements AutoCloseable {
             return;
         }
         closed = true;
-        try {
-            host.dispose();
-        } catch (RuntimeException ignored) {
-            // 资源释放路径不掩盖主流程结果：宿主 runtime 回收失败不应让已产出的图作废。
-        }
+        // 只 dispose 一次：宿主 dispose 自身幂等（Owner 回收有 disposed 短路），此处的第二次调用
+        // 是历史复制残留、恒为 no-op —— 删掉它不改变任何行为（2026-09-18 独立复核确认后清理）。
         try {
             try {
                 host.dispose();
