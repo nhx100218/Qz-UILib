@@ -397,6 +397,17 @@ build\headless\qz-shot.bat --page=glass --size=1280x900 --backdrop-qualities=ful
   （该分支在设施里此前从未被执行过，见规划 F40）；
 - 档位只影响**有玻璃请求的页面**：`config` 页本就没有 backdrop 请求（读数恒 `none`），给它设档位不改变产物。
 
+**chat / hud 也吃档位**（F43 实测，此前只在 `glass` 页验证过）：chat 的玻璃在气泡表面
+（`ChatMessageList` 的 bubbleSurface → `UiBackdrop`），hud 是同一棵内容树走 HUD 宿主装配。
+
+| 页面（1280×720，`--text="Steve:glass probe"`） | `full` | `eco` | `solid` |
+|---|---|---|---|
+| `chat` | `quality=full taps=13 path=shader requests=22` · 11563 B | `quality=eco taps=9 path=shader requests=22` · 11568 B | `quality=solid taps=13 path=none`（策略禁用） · 9501 B |
+| `hud` | `quality=full taps=13 path=shader requests=21` · 11841 B | `quality=eco taps=9 path=shader requests=21` · 11881 B | `quality=solid taps=13 path=none` · 9866 B |
+
+三档产物两两不同（`full` vs `eco`：chat 差 5 B、hud 差 40 B；`solid` 分别少 17.8% / 16.7%）——档位确实进了这两页的像素，
+门禁 `HeadlessPageLinkageTest.backdropQualityAxisAppliesToChatAndHud` 钉住这组读数与三档产物差异。
+
 ## 搜索选择器（picker）
 
 `ScenePickerPanel`（库内体量最大的控件族：面板 + 分类导航 + 虚拟网格 + 成员带 + 信息条 + 密度档）的

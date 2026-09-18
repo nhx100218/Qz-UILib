@@ -155,6 +155,39 @@ public class HeadlessPageLinkageTest {
     }
 
     /**
+     * 玻璃质量档必须覆盖 chat / hud 页（此前只在 glass 页有判据）。
+     *
+     * <p>边界登记里「{@code --backdrop-quality} 与 chat/hud 的组合」长期是未测项：chat 页的玻璃在气泡
+     * 表面（{@code ChatMessageList} 的 bubbleSurface → {@code UiBackdrop}），hud 页是同一棵内容树走 HUD
+     * 宿主装配。判据钉三件事：三档读数各自正确（full 13 抽头 / eco 9 抽头 / solid 禁用滤镜）、两个非
+     * solid 档仍走 shader（编译降级会露出来）、三档产物两两不同（档位真的进了像素）。</p>
+     *
+     * <p>实测（1280x720，chat / hud 各三档）：chat 11563 / 11568 / 9501 B、hud 11841 / 11881 / 9866 B；
+     * 玻璃请求计数 chat=22 / hud=21。它同时是这两页玻璃装配的回归锚 —— 之前没有任何判据跑过
+     * 「chat/hud × 玻璃档」。</p>
+     */
+    @Test
+    public void backdropQualityAxisAppliesToChatAndHud() throws Exception {
+        for (String page : new String[] {"chat", "hud"}) {
+            String name = "linkage-bq-" + page;
+            String output = renderFull(name, "--page=" + page, "--text=Steve:glass probe",
+                    "--backdrop-qualities=full,eco,solid");
+            Assert.assertTrue(page + "：full 档必须报 13 抽头：\n" + output,
+                    output.contains("backdrop: quality=full taps=13 path=shader"));
+            Assert.assertTrue(page + "：eco 档必须报 9 抽头且走 shader：\n" + output,
+                    output.contains("backdrop: quality=eco taps=9 path=shader"));
+            Assert.assertTrue(page + "：solid 档必须禁用滤镜（读数 path=none）：\n" + output,
+                    output.contains("backdrop: quality=solid taps=13 path=none"));
+            Assert.assertEquals(page + "：两个非 solid 档都必须走 shader（降级会露出来）：\n" + output,
+                    2, countOf(output, " path=shader"));
+            List<Path> produced = sameStem(Paths.get("build", "reports", "headless", name + ".png")
+                    .toAbsolutePath());
+            Assert.assertEquals(page + "：三档产物必须两两不同（档位没进像素）：\n" + output,
+                    3, digestsOf(produced).size());
+        }
+    }
+
+    /**
      * picker 页必须接收 {@code --theme}：面板表面经主题配方派生，换档应改变像素。
      *
      * <p>补这条的理由与 glass 的 {@code glassThemeAxisSwitchesContent} 同型 —— 独立复核指出
@@ -271,6 +304,51 @@ public class HeadlessPageLinkageTest {
         Assert.assertTrue("出图后残留了临时配置目录（会话清理没执行）：" + after, after.isEmpty());
     }
 
+    /**
+     * 用<b>完整集</b> classpath 直启一次出图：chat / hud 触及 {@code net.minecraft.*}，
+     * 最小集下装配即失败（那是判据 {@code missingMinecraftDependencyReportsContractExitCode} 的工况）。
+     * 完整集未产出时跳过（环境不具备，不算失败）。
+     */
+    private static String renderFull(String name, String... extraArgs) throws Exception {
+        Path full = fullClasspathFile();
+        Assume.assumeTrue("完整集 classpath 未产出（chat/hud 需要 patchedMc 类），跳过："
+                + System.getProperty("qz.headless.classpathFile", ""), full != null);
+        Shot shot = runShotWith(full, name, extraArgs);
+        HeadlessShotGate.assumeEnvironmentAvailable(name, shot.exit, shot.output);
+        Assert.assertEquals("headless 直启失败（" + name + " exit=" + shot.exit + "）：\n" + shot.output,
+                0, shot.exit);
+        List<Path> produced = sameStem(shot.outputPath);
+        Assert.assertFalse("未产出 PNG（" + name + "）：\n" + shot.output, produced.isEmpty());
+        return shot.output;
+    }
+
+    /** 直启用的完整集 classpath 文件（与最小集同目录）；文件不存在返回 null。 */
+    private static Path fullClasspathFile() {
+        String classpathFile = System.getProperty("qz.headless.classpathFile", "");
+        if (classpathFile.isEmpty()) {
+            return null;
+        }
+        Path full = Paths.get(classpathFile).resolveSibling("classpath-full.txt");
+        return Files.isRegularFile(full) ? full : null;
+    }
+
+    /** 产物集合的内容摘要（前 8 字节 sha256），用来钉「档位真的改了像素」。 */
+    private static Set<String> digestsOf(List<Path> paths) throws Exception {
+        Set<String> digests = new LinkedHashSet<String>();
+        java.security.MessageDigest digest = java.security.MessageDigest.getInstance("SHA-256");
+        for (Path path : paths) {
+            digest.reset();
+            byte[] bytes = digest.digest(Files.readAllBytes(path));
+            StringBuilder hex = new StringBuilder();
+            for (int i = 0; i < 8; i++) {
+                hex.append(Character.forDigit((bytes[i] >> 4) & 0xF, 16));
+                hex.append(Character.forDigit(bytes[i] & 0xF, 16));
+            }
+            digests.add(hex.toString());
+        }
+        return digests;
+    }
+
     /** 直启一次出图并返回进程输出；退出码非 0 即断言失败（附完整输出便于定因）。 */
     private static String render(String name, String... extraArgs) throws Exception {
         Shot shot = runShot(name, extraArgs);
@@ -298,6 +376,11 @@ public class HeadlessPageLinkageTest {
         String classpathFile = System.getProperty("qz.headless.classpathFile", "");
         Assume.assumeTrue("未注入 headless 直启 classpath，跳过页面可链接性门禁",
                 !classpathFile.isEmpty() && new File(classpathFile).isFile());
+        return runShotWith(Paths.get(classpathFile), name, extraArgs);
+    }
+
+    /** 直启实现：classpath 由调用方给（最小集 / 完整集）。 */
+    private static Shot runShotWith(Path classpath, String name, String... extraArgs) throws Exception {
         String nativesDir = System.getProperty("qz.headless.nativesDir", "");
 
         Path out = Paths.get("build", "reports", "headless", name + ".png").toAbsolutePath();
@@ -313,7 +396,7 @@ public class HeadlessPageLinkageTest {
         command.add("-Djava.library.path=" + nativesDir);
         command.add("-Xmx2g");
         command.add("-cp");
-        command.add(new String(Files.readAllBytes(Paths.get(classpathFile)), StandardCharsets.UTF_8).trim());
+        command.add(new String(Files.readAllBytes(classpath), StandardCharsets.UTF_8).trim());
         command.add("club.heiqi.uilib.internal.devtools.headless.HeadlessShotMain");
         for (String one : extraArgs) {
             command.add(one);

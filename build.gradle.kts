@@ -210,6 +210,12 @@ tasks.withType<Test>().configureEach {
         check(headlessNativesDir.isDirectory) {
             "headless natives 目录缺失：" + headlessNativesDir
         }
+        // chat/hud 的玻璃档门禁走完整集（classpath-full.txt）直启：缺失时那条判据会 Assume 跳过，
+        // 与最小集同理 —— 构建期 fail 一次，别让门禁静默变绿。
+        val headlessFullClasspathFile = headlessRuntimeDir.get().file("classpath-full.txt").asFile
+        check(headlessFullClasspathFile.isFile && headlessFullClasspathFile.length() > 0L) {
+            "headless 完整集 classpath 缺失或为空：${headlessFullClasspathFile} —— chat/hud 的玻璃档门禁会被静默跳过"
+        }
     }
     systemProperty("qz.headless.classpathFile", headlessClasspathFile.absolutePath)
     systemProperty("qz.headless.nativesDir", headlessNativesDir.absolutePath)

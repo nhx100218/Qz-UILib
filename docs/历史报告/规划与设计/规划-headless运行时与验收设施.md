@@ -1470,6 +1470,57 @@ fs=200 档的产物差异（+11.7%）就是行内 code 12 → 24 的可见后果
 它另有两条【建议】未在本轮落地并如实登记：100% 档的自动回归锚（现由产物 sha256 人工比对承担）、
 表格几何倍率的独立确认（见边界 2）。
 
+### F43 玻璃质量档覆盖 chat / hud：验证型增量（2026-09-18）
+
+**动机**：`--backdrop-quality` 是 F40 引入的请求级玻璃档，但当时只在 `glass` 页有判据；工作站任务清单里
+「`--backdrop-quality` 与 chat/hud 的组合未测」一直是覆盖缺口（该清单在工作站仓，不在本仓）。这两页的玻璃形态与 glass 页不同：
+chat 页的玻璃在**气泡表面**（`ChatMessageList` 的 bubbleSurface → `UiBackdrop.liquidGlass(DARK_REGULAR…)`），
+hud 页是同一棵内容树走 `SceneHostWindow` 宿主装配（外壳 + 四角锚定 + 帧管线）。
+
+**实测（1280×720，`--backdrop-qualities=full,eco,solid`，逐档独立进程）**：
+
+| 页面 | full | eco | solid |
+|---|---|---|---|
+| chat | `taps=13 path=shader requests=22` · 11563 B | `taps=9 path=shader requests=22` · 11568 B | `taps=13 path=none`（策略禁用） · 9501 B |
+| hud | `taps=13 path=shader requests=21` · 11841 B | `taps=9 path=shader requests=21` · 11881 B | `taps=13 path=none` · 9866 B |
+
+三档产物两两不同（full vs eco：chat 差 5 B、hud 差 40 B；solid 分别少 17.8% / 16.7%）⇒ 档位真的进了这两页的像素；
+`eco` 档同样 `path=shader`（9 抽头变体在这两页的材质参数下也编译/链接通过）。
+
+**门禁**：`HeadlessPageLinkageTest.backdropQualityAxisAppliesToChatAndHud` —— 遍历 chat / hud 两页，
+断言三档读数各自正确（full 13 抽头 / eco 9 抽头 / solid `path=none`）、两个非 solid 档的
+`path=shader` 计数为 2、三档产物 sha256 两两不同。
+
+**顺带补的测试通道**：chat / hud 触及 `net.minecraft.*`，最小集直启以退出码 6 收场（那是
+`missingMinecraftDependencyReportsContractExitCode` 的工况）。故本判据走**完整集** classpath
+（`classpath-full.txt`，与最小集同目录）直启，文件缺失时 `Assume` 跳过；`runShotWith(Path, …)`
+是从 `runShot` 抽出的公共实现，两条路共用注入 / 清理 / 输出捕获。
+
+**变异验证（各自独立脚本 + try/finally + 还原逐字节校验）**：
+① 去掉 `HeadlessSession.applyEnvironment` 的档位写入 ⇒ 判据红；
+② 去掉 chat 气泡的玻璃装配（`ChatMessageList` 的 `builder.backdrop(chatBubbleGlass(...))` → `null`）⇒ 判据红。
+两条都说明判据钉的是**装配与档位写入本身**，而不是「exit=0 有产物」。
+
+**边界（如实登记）**：hud 页的玻璃来自同一份气泡装配（判据覆盖两页，根因同一处）；
+`--share-context` 下三档同进程复用的档位写入语义沿用 F40 的登记（每档 open 各写一次、同值幂等），本轮未重复验证。
+**独立审核与处置（零上下文子代理，2026-09-18）**：总判**有条件通过** —— 判据真实性、覆盖面、读数、
+变异可红性与全量门禁均经独立复核，无假绿实证；唯一条件是用文档表格缺 `--text` 前置条件（不带 `--text`
+时走 `CHAT_DEFAULT_TEXT`：chat 三档实测 69927 / 69958 / 51607 B、hud 70792 / 70786 / 52972 B，与本表
+数值差约 6 倍，表格数字无法自复现）。它另做了 4 组变异，其中它追加的「`tapBudget` 恒 13」（读数不变、
+像素相同）让 glass 既有判据仍绿、只有本判据的**像素断言**变红 ⇒ 证明像素断言补的正是读数断言的盲区。
+处置：① 表格补 `--text="Steve:glass probe"` 前置条件与 `quality=` 前缀，差值改为逐页（chat 5 B /
+hud 40 B；solid 少 17.8% / 16.7%）；② 按建议给 `build.gradle.kts` 的 test `doFirst` 补
+`classpath-full.txt` 存在性 check（与那段注释声明的「构建期 fail 一次，别让门禁静默跳过」同旨，
+消除本轮新增的跳过通道）；③ full / eco 档断言收紧为带 `path=shader` 的子串；④ 删掉小节末尾多余空行；
+⑤ 本节「任务清单」改为「工作站任务清单」并注明不在本仓（审核者无法在仓内检索到该出处）。
+
+**未采纳的建议（如实登记）**：审核者指出 full / eco 断言是纯子串匹配、无玻璃请求时也可能通过；
+本轮以「收紧为带 `path=shader`」+ `countOf(" path=shader") == 2` + solid 的 `path=none` 三者共同承担，
+不再额外重复断言。
+
+**残留边界**：`--share-context` 下三档的档位写入语义仍是 F40 的登记（本轮未重复验证）；
+无 GL / natives 不可用环境下的 `Assume` 跳过链路只在静态层面推导过（本机有 GL）。
+
 ## 三、目标形态
 
 **四件套 + 一个出口：**
