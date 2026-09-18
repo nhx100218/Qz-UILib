@@ -70,6 +70,66 @@ public class HeadlessInputDeviceTest {
                 1, source.drainFrame().getPointerEvents().size());
     }
 
+    /**
+     * 指针事件的修饰位必须与按住的键一致 —— Ctrl / Shift 不得互换。
+     *
+     * <p>它守的是一处真实缺陷（独立审核 2026-09-18 发现）：{@code press} / {@code release} /
+     * {@code scroll} / {@code cancelPointer} 四条路径调 {@code RawInputEvent.ofPointer} 时把
+     * {@code (controlDown, shiftDown)} 写成了 {@code (shiftDown, controlDown)}，而 {@code moveTo} 与
+     * {@code ofKey} 的顺序是对的 —— 于是「按住 Ctrl 点一下」在事件里变成「按住 Shift」，依赖修饰键的
+     * 控件（{@code ChatInputSurface} 的 Shift 横滚、将来任何 Ctrl 多选）静默走错分支。
+     * 既有 {@link #modifiersFollowHeldKeys()} 只覆盖 MOVE，故此前全绿。</p>
+     */
+    @Test
+    public void pointerModifiersFollowHeldKeysWithoutSwapping() {
+        HeadlessInputSource source = new HeadlessInputSource(200, 100);
+        HeadlessInputScript.apply(source.device(),
+                "move 10 10; frame; keydown CONTROL_LEFT; frame; move 20 20; frame; down LEFT;"
+                        + " frame; scroll 3; frame; up LEFT; frame; cancel");
+
+        SceneInputFrame idleMove = source.drainFrame();
+        Assert.assertFalse("未按键时的 MOVE 不得带修饰",
+                idleMove.isControlDown() || idleMove.isShiftDown());
+        Assert.assertEquals(SceneKeyAction.PRESSED, source.drainFrame().getKeyEvents().get(0).getAction());
+        // 按住 Ctrl 后的 MOVE 也必须带 Ctrl —— 独立审核实测：这条此前无判据（moveTo 丢掉 Ctrl 不会变红）。
+        assertModifiers(source.drainFrame(), "move(按住 Ctrl)", ScenePointerAction.MOVE, true);
+        assertModifiers(source.drainFrame(), "down", ScenePointerAction.BUTTON_DOWN, true);
+        assertModifiers(source.drainFrame(), "scroll", ScenePointerAction.SCROLL, true);
+        assertModifiers(source.drainFrame(), "up", ScenePointerAction.BUTTON_UP, true);
+        assertModifiers(source.drainFrame(), "cancel", ScenePointerAction.CANCEL, true);
+
+        // 第二段：按住 Alt —— Alt 位必须保留、Meta 不得被误置。
+        // 只按住 Ctrl 的段落覆盖不到这条：未按 Alt/Meta 时两者同为 false，换位不会改变读数
+        // （独立审核的 alt/meta 换位变异因此存活），必须真的按住才看得见。
+        HeadlessInputSource altSource = new HeadlessInputSource(200, 100);
+        HeadlessInputScript.apply(altSource.device(),
+                "move 30 30; frame; keydown ALT_LEFT; frame; move 40 40");
+        altSource.drainFrame();
+        altSource.drainFrame();
+        SceneInputFrame altMove = altSource.drainFrame();
+        Assert.assertFalse("按下 Alt 后的 MOVE 必须有指针事件", altMove.getPointerEvents().isEmpty());
+        Assert.assertTrue("Alt 修饰必须保留", altMove.isAltDown());
+        Assert.assertFalse("Meta 不得被误置（alt/meta 换位回归）", altMove.isMetaDown());
+        Assert.assertFalse("Ctrl 不得被误置", altMove.isControlDown());
+        Assert.assertFalse("Shift 不得被误置", altMove.isShiftDown());
+    }
+
+    /**
+     * 该帧必须：有指针事件、动作类型正确、带 Ctrl，且 Shift / Alt / Meta 都不得被误置。
+     *
+     * <p>Alt / Meta 的断言是独立审核指出的盲区：把五处 {@code ofPointer} 的 alt/meta 换位时，
+     * 此前**没有任何判据变红**。</p>
+     */
+    private static void assertModifiers(SceneInputFrame frame, String what, ScenePointerAction expected,
+            boolean ctrl) {
+        Assert.assertFalse(what + "：该帧必须有指针事件", frame.getPointerEvents().isEmpty());
+        Assert.assertEquals(what + "：指针动作类型", expected, frame.getPointerEvents().get(0).getAction());
+        Assert.assertEquals(what + "：Ctrl 修饰", ctrl, frame.isControlDown());
+        Assert.assertFalse(what + "：Shift 不得被误置", frame.isShiftDown());
+        Assert.assertFalse(what + "：Alt 不得被误置", frame.isAltDown());
+        Assert.assertFalse(what + "：Meta 不得被误置", frame.isMetaDown());
+    }
+
     /** 整串文本（外部接管 / IME 语义）在一帧内以单条 TEXT 事件交付。 */
     @Test
     public void composeDeliversWholeTextInOneFrame() {

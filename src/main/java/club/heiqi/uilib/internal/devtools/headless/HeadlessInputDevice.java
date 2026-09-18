@@ -99,7 +99,7 @@ public final class HeadlessInputDevice {
             public void apply(InputFrameBuilder builder, long timeNanos, HeadlessInputDevice device) {
                 device.buttonsDown.add(button);
                 builder.push(RawInputEvent.ofPointer(ScenePointerAction.BUTTON_DOWN, device.pointerX,
-                        device.pointerY, button, 0, 0, 0, device.shiftDown(), device.controlDown(),
+                        device.pointerY, button, 0, 0, 0, device.controlDown(), device.shiftDown(),
                         device.altDown(), device.metaDown(), timeNanos));
             }
         });
@@ -116,7 +116,7 @@ public final class HeadlessInputDevice {
             public void apply(InputFrameBuilder builder, long timeNanos, HeadlessInputDevice device) {
                 device.buttonsDown.remove(button);
                 builder.push(RawInputEvent.ofPointer(ScenePointerAction.BUTTON_UP, device.pointerX,
-                        device.pointerY, button, 0, 0, 0, device.shiftDown(), device.controlDown(),
+                        device.pointerY, button, 0, 0, 0, device.controlDown(), device.shiftDown(),
                         device.altDown(), device.metaDown(), timeNanos));
             }
         });
@@ -163,8 +163,7 @@ public final class HeadlessInputDevice {
             @Override
             public void apply(InputFrameBuilder builder, long timeNanos, HeadlessInputDevice device) {
                 builder.push(RawInputEvent.ofPointer(ScenePointerAction.SCROLL, device.pointerX,
-                        device.pointerY, SceneMouseButton.NONE, deltaY, deltaX, deltaY, device.shiftDown(),
-                        device.controlDown(), device.altDown(), device.metaDown(), timeNanos));
+                        device.pointerY, SceneMouseButton.NONE, deltaY, deltaX, deltaY, device.controlDown(), device.shiftDown(), device.altDown(), device.metaDown(), timeNanos));
             }
         });
     }
@@ -255,8 +254,7 @@ public final class HeadlessInputDevice {
             @Override
             public void apply(InputFrameBuilder builder, long timeNanos, HeadlessInputDevice device) {
                 builder.push(RawInputEvent.ofPointer(ScenePointerAction.CANCEL, device.pointerX,
-                        device.pointerY, SceneMouseButton.NONE, 0, 0, 0, device.shiftDown(),
-                        device.controlDown(), device.altDown(), device.metaDown(), timeNanos));
+                        device.pointerY, SceneMouseButton.NONE, 0, 0, 0, device.controlDown(), device.shiftDown(), device.altDown(), device.metaDown(), timeNanos));
             }
         });
     }

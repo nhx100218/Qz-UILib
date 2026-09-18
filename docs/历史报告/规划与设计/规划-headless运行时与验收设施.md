@@ -1641,9 +1641,40 @@ try/finally + 还原逐字节校验）：① 断开查询绑定 ⇒ 判据 1 红
 
 它另有 3 条【建议】本轮采纳 1 条（滚动判据用 `--nodes` 位移做主证据），其余 2 条登记
 （`--nodes` 与 `--out` 同用 exit=2 的文档说明、`EMPTY_QUERY` 的前提注释）。
-**它报告的一处本轮外既有缺陷（本轮未改，登记为下一轮候选）**：`HeadlessInputDevice` 的
+**它报告的一处本轮外既有缺陷（本轮未改，登记为下一轮候选；**F46 已修并补判据**）**：`HeadlessInputDevice` 的
 `press` / `release` / `scroll` / `cancelPointer` 调 `ofPointer` 时把 `(shiftDown, controlDown)` 传进了
 `(controlDown, shiftDown)` 的参数位（`moveTo` / `keyDown` 顺序正确）⇒ 带修饰键时 control / shift 互换。
+
+### F46 设备模型修饰键语义收口：指针事件的 Ctrl/Shift 参数位互换（2026-09-18）
+
+**缺陷来源**：F45 的独立审核在复核设备模型时报告 —— `HeadlessInputDevice` 的 `press` / `release` /
+`scroll` / `cancelPointer` 四条路径调 `RawInputEvent.ofPointer` 时把 `(controlDown, shiftDown)` 写成了
+`(shiftDown, controlDown)`（该工厂第 8/9 参就是 `controlDown, shiftDown`），而 `moveTo` 与 `ofKey` 的顺序
+是对的 ⇒ **按住 Ctrl 时指针事件带的是 Shift，反之亦然**。既有判据 `modifiersFollowHeldKeys` 只覆盖 MOVE
+（`moveTo` 正确），故这条缺陷此前全绿。
+
+**影响面（如实界定，独立审核补齐）**：生产侧消费修饰键的路径**至少三处** ——
+① `ChatInputSurface` 的 Shift+滚轮（横滚）；② `SceneTextInputPrimitive`（`POINTER_DOWN` 内读
+`isShiftDown()`，Shift+点击扩展选区）；③ `SceneTextAreaPrimitive`（同构）；修饰位由 `SceneInputRouter`
+从指针事件透传。于是 headless 脚本里「Ctrl+点击文本输入 / 文本域」会扩展选区、真按 Shift 反而不扩展；
+**真机不受影响**（真机走 `LwjglInputSource`，其 `ofPointer` 顺序正确）。
+
+**修复**：四条调用点统一为 `(controlDown, shiftDown)`，与 `moveTo` / `ofKey` 同序。
+
+**门禁**：`HeadlessInputDeviceTest.pointerModifiersFollowHeldKeysWithoutSwapping` —— 第一段脚本
+`move 10 10; frame; keydown CONTROL_LEFT; frame; move 20 20; frame; down LEFT; frame; scroll 3;`
+`frame; up LEFT; frame; cancel`，逐帧断言「有指针事件 + **动作类型正确** + 带 Ctrl + Shift / Alt / Meta 皆不得
+被误置」；第二段按住 `ALT_LEFT` 断言「alt=true、meta=false、Ctrl / Shift=false」。**第二段与 MOVE 断言是
+审核逼出来的**：只按 Ctrl 时 alt/meta 同为 false，换位不可见；MOVE 的 Ctrl 位此前也无判据。
+变异（各自独立脚本 + try/finally + 还原逐字节校验，**四条全红**）：① 四条调用点改回互换；② `moveTo` 丢 Ctrl；
+③ 五处 `ofPointer` 的 alt/meta 换位；④ `moveTo` 的 alt/meta 换位（②③④ 在补断言前**全部存活**）。
+
+**边界（如实登记）**：端到端的**控件行为**本轮未覆盖，但**这是「可覆盖而未做」** —— 文本输入 / 文本域
+演示页在 headless 可达（`--page=playground --page-index=1|2`，见 `PlaygroundPageRegistry`），
+「Shift+点击扩展选区」本可作端到端判据（独立审核指出我把「未做」误写成「不可达」，此处更正）；
+`altDown` / `metaDown` 顺序已核对一致且本轮补了断言；`dblclick` / `down` / `up` / `cancel` 语句的
+**页面级**行为仍未覆盖（F45 登记）。
+
 ## 三、目标形态
 
 **四件套 + 一个出口：**

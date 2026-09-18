@@ -196,6 +196,13 @@ build\headless\qz-shot.bat --page=playground --actions="move 315 88; frame; clic
 让内容区节点 y 位移 5px（出图 80361 → 80802 B）；`scroll 10`（内容已在顶部）不产生位移 —— 别把
 「正向无效」当成「语句无效」（规划 F45 记录了这条被独立审核推翻的误判）。
 
+
+**修饰键**：`keydown` **按住**、`keyup` **释放**；按住期间，后续**指针事件**（`move` / `down` / `up` /
+`scroll` / `cancel`）与键盘事件都会带上该修饰位。实测：按住 `CONTROL_LEFT` 后这几类指针事件都是
+「带 Ctrl、不带 Shift / Alt / Meta」；按住 `ALT_LEFT` 时是「带 Alt、不带 Meta」。门禁
+`HeadlessInputDeviceTest.pointerModifiersFollowHeldKeysWithoutSwapping` 钉住它（补判据前，四条指针路径的
+Ctrl/Shift 参数位是互换的：脚本里按 Ctrl 会变成按 Shift，依赖修饰键的控件静默走错分支；规划 F46）。
+
 ## 环境矩阵（外观 × 玻璃档 × 字号 × 分辨率 × 诊断）
 
 出图的观感不只由页面决定，也由**环境事实**决定。请求可声明五类环境量，与尺寸一样按档位扫：
