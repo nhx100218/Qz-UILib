@@ -55,6 +55,8 @@ public class HeadlessPageLinkageTest {
 
     private static final Pattern COMMANDS = Pattern.compile("commands=(\\d+)");
     private static final Pattern COLORS = Pattern.compile("colors=(\\d+)");
+    private static final Pattern SEGMENTS = Pattern.compile("segments=(\\d+)");
+    private static final Pattern DISPATCHED = Pattern.compile("dispatched=(\\d+)");
     private static final String TEMP_DIR_PREFIX = "qz-headless-config-";
 
     /** 配置页在最小集上必须真的出图（本轮回归的守卫）。 */
@@ -305,6 +307,86 @@ public class HeadlessPageLinkageTest {
     }
 
     /**
+     * 输入脚本必须真的驱动交互 —— 这条钉 headless 的「交互证据能力」。
+     *
+     * <p>此前 {@code --actions} / {@code --script} 在测试里**零覆盖**：使用文档有整章示例，
+     * 但没有判据守着「脚本真的派发事件、点击真的改变画面」。本判据用 playground 首页点「Markdown 渲染」
+     * 导航项：基线帧没有段流（{@code segments=0}），点击后落到 Markdown 页（段流非零），
+     * 且读数报告指针落在脚本声明的坐标上。</p>
+     */
+    @Test
+    public void actionScriptDrivesAClickThatChangesTheShot() throws Exception {
+        String base = render("linkage-input-base", "--page=playground");
+        // 前提（不是被测行为）：playground 首页正文是零段流的形状事实，差分靠它成立。
+        Assert.assertEquals("基线（未点击）不该有段流：\n" + base, 0, segmentsOf(base));
+        String clicked = render("linkage-input-click", "--page=playground",
+                "--actions=move 953 84; frame; click; wait 8");
+        // 必须解析数字：子串 "dispatched=" 在基线里也存在（值为 0），纯 contains 无判别力
+        // （独立审核实测：把 click 的 press/release 去掉后 dispatched=1 仍能通过 contains）。
+        Assert.assertTrue("输入脚本必须真的派发事件（dispatched 应为正）：\n" + clicked,
+                dispatchedOf(clicked) > 0);
+        Assert.assertTrue("指针必须落在脚本声明的坐标（953,84）：\n" + clicked,
+                clicked.contains("pointer=953,84"));
+        Assert.assertTrue("点击后必须切到 Markdown 页（段流出现）：\n" + clicked, segmentsOf(clicked) > 0);
+    }
+
+    /**
+     * 目标寻址链路必须自洽：{@code --find} 报出的地址，{@code --center} 解出的中心点必须逐字相同；
+     * 越界地址必须按契约失败（退出码 3），不得静默回落到 0,0。
+     *
+     * <p>它是 agent 用「地址 → 中心点 → 输入脚本」这条链路的守卫：地址来自布局，写死坐标会在
+     * 换字号 / 换尺寸后失效（使用文档已写明「跨字号脚本请按路径重新取坐标」）。</p>
+     */
+    @Test
+    public void findAddressResolvesToTheSameCenterAndOutOfRangeFails() throws Exception {
+        String find = renderQuery("linkage-find", "--page=playground", "--find=Markdown");
+        Matcher matcher = Pattern.compile("(r[0-9/]+) SceneNode .*center=(\\d+,\\d+)").matcher(find);
+        Assert.assertTrue("--find 必须给出地址与中心点：\n" + find, matcher.find());
+        String address = matcher.group(1);
+        String center = matcher.group(2);
+        String resolved = renderQuery("linkage-center", "--page=playground", "--center=" + address);
+        Assert.assertTrue("--center 解同一地址必须得到同一中心点 " + center + "：\n" + resolved,
+                resolved.contains("center " + address + " = " + center));
+        // 越界地址取「真实父路径 + 越界下标」：父节点确实有子节点，于是它只能靠边界检查失败 ——
+        // 用凭空虚构的深路径会走到异常分支、同样非 0，钉不住「静默回落到某个存在的节点」这种变异。
+        String parent = address.indexOf('/') > 0 ? address.substring(0, address.lastIndexOf('/')) : "r0";
+        Shot bad = runShot("linkage-center-bad", "--page=playground", "--center=" + parent + "/99");
+        Assert.assertEquals("越界地址必须按契约失败（而不是静默回落到某个存在的节点）：\n" + bad.output,
+                3, bad.exit);
+        // 退出码 3 是「未捕获的未预期错误」与「全部能力失败」的公共码：只钉退出码挡不住
+        // 「夹取到一个未布局的节点」这类静默回落，成因必须自证。
+        Assert.assertTrue("失败必须自证成因是「地址越界」：\n" + bad.output,
+                bad.output.contains("地址越界"));
+    }
+
+    /**
+     * 查询路径必须**不产出 PNG**：它们只推进若干帧拿布局再投影，产物集合属于出图请求。
+     *
+     * <p>缺这条判据时，把查询路径改成顺手写一张图不会有任何测试变红（它自己的契约无人守），
+     * 后果是批量出图的产物集合被污染。它是 {@link #queryPathsDoNotProduceAShot()} 之外
+     * {@code renderQuery} 注释里那句「不产出 PNG」的判据化。</p>
+     */
+    @Test
+    public void queryPathsDoNotProduceAShot() throws Exception {
+        renderQuery("linkage-query-only", "--page=playground", "--find=Markdown");
+        List<Path> produced = sameStem(Paths.get("build", "reports", "headless", "linkage-query-only.png")
+                .toAbsolutePath());
+        Assert.assertTrue("查询路径不得产出 PNG（实测产物：" + produced + "）", produced.isEmpty());
+    }
+
+    /**
+     * 查询路径（{@code --find} / {@code --center} / {@code --nodes}）**不产出 PNG**：
+     * 只判退出码，不要求产物存在（使用文档写明「不产出 PNG」是它们的契约）。
+     */
+    private static String renderQuery(String name, String... extraArgs) throws Exception {
+        Shot shot = runShot(name, extraArgs);
+        HeadlessShotGate.assumeEnvironmentAvailable(name, shot.exit, shot.output);
+        Assert.assertEquals("headless 查询路径失败（" + name + " exit=" + shot.exit + "）：\n" + shot.output,
+                0, shot.exit);
+        return shot.output;
+    }
+
+    /**
      * 用<b>完整集</b> classpath 直启一次出图：chat / hud 触及 {@code net.minecraft.*}，
      * 最小集下装配即失败（那是判据 {@code missingMinecraftDependencyReportsContractExitCode} 的工况）。
      * 完整集未产出时跳过（环境不具备，不算失败）。
@@ -479,6 +561,18 @@ public class HeadlessPageLinkageTest {
             offset += needle.length();
         }
         return count;
+    }
+
+    /** 从输出里取命令面摘要的段流条数；没有该行返回 -1。 */
+    private static int segmentsOf(String output) {
+        Matcher matcher = SEGMENTS.matcher(output);
+        return matcher.find() ? Integer.parseInt(matcher.group(1)) : -1;
+    }
+
+    /** 从输出里取输入读数里的派发事件数；没有该行返回 -1。 */
+    private static int dispatchedOf(String output) {
+        Matcher matcher = DISPATCHED.matcher(output);
+        return matcher.find() ? Integer.parseInt(matcher.group(1)) : -1;
     }
 
     /** 从输出里取命令面摘要的命令数；没有该行返回 -1。 */

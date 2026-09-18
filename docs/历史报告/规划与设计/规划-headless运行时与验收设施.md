@@ -1521,6 +1521,70 @@ hud 40 B；solid 少 17.8% / 16.7%）；② 按建议给 `build.gradle.kts` 的 
 **残留边界**：`--share-context` 下三档的档位写入语义仍是 F40 的登记（本轮未重复验证）；
 无 GL / natives 不可用环境下的 `Assume` 跳过链路只在静态层面推导过（本机有 GL）。
 
+### F44 输入脚本与目标寻址入门禁：交互证据能力的空白补上（2026-09-18）
+
+**动机（覆盖缺口）**：`--actions` / `--script`（输入脚本）与 `--nodes` / `--find` / `--center`（目标寻址）
+是 agent 用 headless 做「交互后出图」的全部手段；使用文档有整章示例，但**测试里零覆盖**（全仓 grep：
+`src/test` 只命中 `--bg`）—— 没有判据守着「脚本真的派发事件、点击真的改变画面、地址与中心点自洽、
+越界按契约失败」。设施的核心承诺是「产物是请求的函数」，交互请求尤其依赖这条链。
+
+**实测（playground 首页，最小集启动器）**：
+
+| 观察 | 读数 |
+|---|---|
+| 基线（无脚本） | `input: dispatched=0 pointer=0,0`；命令面 `segments=0`；产物 827799 B |
+| `--actions="move 953 84; frame; click; wait 8"` | `dispatched=3 pending=2 pointer=953,84`；`segments=62`（Markdown 页）；产物 747778 B |
+| `--find=Markdown` | `r0/1/0/8 SceneNode "Markdown 渲染" @879,64 148x40 fs=16 [target] center=953,84` |
+| `--center=r0/1/0/8` | `center r0/1/0/8 = 953,84`（与 `--find` 逐字一致） |
+| `--center=r0/1/0/99`（真实父路径 + 越界下标） | exit **3** + `[能力探测] 地址越界：… 在第 2 层要下标 99，但该节点只有 9 个子节点` |
+| `--page-index=8`（对照：直接跳到 Markdown 页） | `segments=62`、产物 743933 B（`--page-index=1` 是另一页：`segments=0`、742951 B）—— 与点击路接近但不同（点击路带 hover / 焦点态） |
+
+**门禁（两条）**：
+
+- `HeadlessPageLinkageTest.actionScriptDrivesAClickThatChangesTheShot`：基线 `segments=0` → 脚本点击后
+  `segments>0`、指针落在脚本声明的坐标、`dispatched=` 非空（钉「脚本真的派发、点击真的改变画面」）；
+- `HeadlessPageLinkageTest.findAddressResolvesToTheSameCenterAndOutOfRangeFails`：`--find` 报出的地址与
+  中心点，`--center` 必须解出**同一串**坐标；越界地址必须按契约以退出码 3 失败（钉「地址 → 中心点」
+  这条链自洽，不许静默回落）。
+
+**顺带补的测试通道**：`--find` / `--center` / `--nodes` 是**查询路径，不产出 PNG**（使用文档写明），
+故新增 `renderQuery(...)`：只判退出码、不要求产物 —— 直接复用 `render(...)` 会误报「未产出 PNG」
+（本轮实际踩到一次）。
+
+**变异验证（各自独立脚本 + try/finally + 还原逐字节校验）**：
+① `HeadlessInputSource.drainFrame()` 不推进设备（脚本事件不进帧）⇒ 判据 1 红；
+② `HeadlessNodePath.resolve` 的越界检查改成「静默夹取最后一个子节点」⇒ 判据 2 红。
+**如实记录一次「变异未生效导致误判」**：越界断言的变异第一次改的是 `resolve` 里的取值行
+（`current = children.get(index)`），而**边界检查就在上一行、仍在生效** ⇒ 变异等于没做、判据全绿；我据此
+写下「虚构深路径抓不住静默回落」的因果，**这个因果是错的** —— 独立审核按字面实现真变异后复现：
+`--center=r0/9/9` 同样 exit 0 + `center = 1066,410`，旧写法照样会红。真正的教训有两条：
+① 变异必须落在**被钉的那句语义**上（边界检查），而不是相邻的取值行；
+② 判「判据抓不住」之前，必须先确认**变异真的改变了行为**（本例用 `--center` 的退出码就地确认）。
+断言侧同时收紧：越界现在除 `exit == 3` 外还要求失败**自证成因**是「地址越界」—— 退出码 3 是
+「未捕获的未预期错误」与「全部能力失败」的公共码，单钉退出码挡不住「夹取到未布局节点」这类静默回落。
+
+**独立审核与处置（零上下文子代理，2026-09-18）**：总判**有条件通过**。它独立复核了改动集（3 文件、
+114 插入、0 删除、既有 `render(...)` 的 15 个调用点未被触碰）、判据真执行（XML `tests=2 skipped=0`）、
+一手读数（逐字复核，均属实）、三条变异（含它自选的「`click` 去掉 press/release」）与全量门禁
+（5825 用例 / 0 失败 / 7 跳过）。5 条【应当修】全部处置：
+
+1. 使用文档新增的「实测」段落在 ```bat 围栏**内部**（渲染成一坨代码）⇒ 移到围栏之后；
+2. 本节 `--page-index=1` 行的 `segments` 读数失实（实测为 0；Markdown 页是 `--page-index=8`）⇒ 更正为
+   `--page-index=8`（`segments=62`、743933 B），并把 index=1 的真相并列；
+3. 本节「判据自身失败」段的因果不成立 ⇒ 按上文如实改写（真因是变异锚点选错、且未确认变异生效）；
+4. 判据 1 的 `contains("dispatched=")` 无判别力（基线自带 `dispatched=0`；变异 C 下 `dispatched=1` 也过）
+   ⇒ 改为解析数字并断言 >0；
+5. 判据 2 只钉 `exit == 3` ⇒ 补「失败必须自证成因是『地址越界』」。
+
+它另有 4 条【建议】，本轮采纳 2 条、登记 2 条：`segmentsOf(base)==0` 已在断言处注明「前提而非被测行为」；
+新增判据 `queryPathsDoNotProduceAShot`（查询路径不得产出 PNG —— 它指出 `renderQuery` 注释里的契约本身
+没有判据守着）。**未采纳并登记为下一轮候选**：`--script=file` 的封口（与 `--actions` 同源，价值有限）、
+设备模型其它语句（`down/up/dblclick/scroll/key/type/compose/cancel`）的覆盖。
+
+**边界（如实登记）**：`--script=file`（文件通道）与 `--actions` 同源，本轮只钉后者；`--nodes` 的节点
+事实表格式未单独钉（已有 `--find` 的地址一致性作间接覆盖）；交互覆盖只有 playground 导航一次点击，
+chat / picker 的输入脚本未覆盖。
+
 ## 三、目标形态
 
 **四件套 + 一个出口：**

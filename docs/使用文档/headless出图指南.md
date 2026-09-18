@@ -169,6 +169,15 @@ frame / wait 4     # 帧边界 / 在**此位置**空推进 4 帧（后续语句�
 build\headless\qz-shot.bat --page=playground --actions="move 315 88; frame; click; wait 4" --out=out\nav.png
 ```
 
+**实测（playground 首页点导航「Markdown 渲染」）**：`--find=Markdown` 报
+`r0/1/0/8 SceneNode "Markdown 渲染" @879,64 148x40 fs=16 [target] center=953,84`，`--center=r0/1/0/8`
+解出同一个 `953,84`；用该坐标跑 `--actions="move 953 84; frame; click; wait 8"` 后读数从基线
+`segments=0` 变为 `segments=62`（真的切到 Markdown 页），产物 827799 B → 747778 B。
+越界地址（真实父路径 + 越界下标，如 `r0/1/0/99`）按契约以**退出码 3** 报 `地址越界`，不会静默回落到
+某个存在的节点。这条链路有门禁守着：`HeadlessPageLinkageTest.actionScriptDrivesAClickThatChangesTheShot`
+（脚本真的派发、点击真的改变画面）与 `findAddressResolvesToTheSameCenterAndOutOfRangeFails`
+（`--find` 的地址与 `--center` 解出的中心点必须逐字一致）。
+
 ## 环境矩阵（外观 × 玻璃档 × 字号 × 分辨率 × 诊断）
 
 出图的观感不只由页面决定，也由**环境事实**决定。请求可声明五类环境量，与尺寸一样按档位扫：
