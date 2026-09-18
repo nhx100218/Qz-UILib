@@ -19,8 +19,8 @@ import cpw.mods.fml.common.event.FMLServerStartingEvent;
         // Tags.VERSION，否则 FML 判定「mod 拒绝自身版本」——集成服务器在进入世界的握手阶段
         // Rejecting connection CLIENT 后卸载全部维度（症状：无法进入世界）。
         // 注意「显式空串」不是开发期形态：它构成空区间并拒绝一切（含自身）；精确版本相等只属于
-        // 整条属性不写的形态。区间不跨 major：下界保留已承诺的 4.9.x，上界取当前制品 4.10.0 的
-        // 下一 minor 边界 4.11.0（覆盖 4.9.x 与 4.10.x）。
+        // 整条属性不写的形态。区间不跨 major：下界为 4.11.0 定档时收紧的已承诺下界，上界取当前
+        // 制品 4.11.0 的下一 minor 边界 4.12.0（覆盖 4.11.x；与 4.10.x 及更早不承诺混用）。
         acceptableRemoteVersions = "[4.11.0,4.12.0)",
         guiFactory = MyMod.GUI_FACTORY)
 public class MyMod {

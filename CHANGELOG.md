@@ -6,6 +6,21 @@
 
 ## [Unreleased]
 
+## [4.11.1] - 2026-09-18
+
+> 全文见 [.changelogs/4.11.1.md](.changelogs/4.11.1.md)。本版 tag 取修订号 **4.11.1**：无公共面增删与签名变更，只收敛内部开发工具的打包边界与生产日志写法。`MyMod.acceptableRemoteVersions` 保持 `[4.11.0,4.12.0)`——补丁沿用既有区间，4.11.x 内部可混用。
+
+### 变更
+
+- 内部开发工具 `internal.devtools` **整包**移出发布产物（原只排除 `headless` 子包），门禁由 `verifyHeadlessNotPackaged` 扩为 `verifyDevToolsNotPackaged`：scene 测试场地、磨玻璃实验室、网络自检端点与开发环境完整命令不再随发布 jar 出厂
+- 命令入口按环境分档：发布产物内只保留 `/qzuilib <modernconfig|chatmd on|off|status>`，玩家通道迁到 `client.command` 并与开发环境完整命令共用实现单点；`/qzuilib test|glass` 只在开发环境可用
+- `ClientProxy` 对开发工具的装配改为「开发环境门 + `Class.forName` 存在性」探测，不再静态引用该包
+
+### 修复
+
+- 配置事件总线与可变配置的监听器异常隔离由 `e.printStackTrace()` 改为 log4j `LOG.error`：原先绕过日志系统直写 stderr，无前缀、不受级别控制、无法过滤归档
+- `CommonProxy` / `ClientProxy` 的 preInit 时序插桩由 INFO 降为 debug
+
 ## [4.11.0] - 2026-09-18
 
 > 全文见 [.changelogs/4.11.0.md](.changelogs/4.11.0.md)。本版 tag 取次版本号 **4.11.0**：含**公共面删除与签名变更**（minor 级，维持 4.9.0 / 4.10.0 的既有做法），并按《发布流程》§1/§2 把 `MyMod.acceptableRemoteVersions` 收紧并抬界为 `[4.11.0,4.12.0)`——**与 4.10.x 及更早版本不承诺混用，客户端/服务端需成对升级**。
