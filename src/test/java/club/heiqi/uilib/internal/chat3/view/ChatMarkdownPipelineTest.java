@@ -125,13 +125,13 @@ public class ChatMarkdownPipelineTest {
         };
         ChatMarkdownPipeline pipeline = new ChatMarkdownPipeline();
         List<ChatMarkdownPipeline.RenderedLine> first =
-                pipeline.layout("- item", 0xFFFFFFFF, 140, 13, null, counting);
+                pipeline.layout("- item", 0xFFFFFFFF, 140, 13, 1.0F, null, counting);
         List<ChatMarkdownPipeline.RenderedLine> second =
-                pipeline.layout("- item", 0xFFFFFFFF, 140, 13, null, counting);
+                pipeline.layout("- item", 0xFFFFFFFF, 140, 13, 1.0F, null, counting);
         Assert.assertSame("每帧零解析:同参二次调用命中缓存(换行未重算)", first, second);
         Assert.assertEquals(1, wrapCalls.size());
         List<ChatMarkdownPipeline.RenderedLine> otherWidth =
-                pipeline.layout("- item", 0xFFFFFFFF, 120, 13, null, counting);
+                pipeline.layout("- item", 0xFFFFFFFF, 120, 13, 1.0F, null, counting);
         Assert.assertNotSame("定行宽变化 → 重换行(缓存 key 含宽度)", otherWidth, first);
         Assert.assertEquals(2, wrapCalls.size());
         // 管道产物形状:「• 」+ 内容(经计数换行原样带出;F2 前导空格机制不变)
@@ -191,7 +191,7 @@ public class ChatMarkdownPipelineTest {
     public void sectionCodesAreLiteralTextWithZeroStyleEffect() {
         ChatMarkdownPipeline pipeline = new ChatMarkdownPipeline();
         List<ChatMarkdownPipeline.RenderedLine> hit = pipeline.layout(
-                SECTION + "a- x", WHITE, 4000, 13, null, PASSTHROUGH);
+                SECTION + "a- x", WHITE, 4000, 13, 1.0F, null, PASSTHROUGH);
         Assert.assertEquals("行首 § 吃掉列表标记 ⇒ 单段落行", 1, hit.size());
         Assert.assertEquals("§ 与其后字符原样进文本，不做任何跳跃切片", SECTION + "a- x",
                 visible(hit));
@@ -203,7 +203,7 @@ public class ChatMarkdownPipelineTest {
 
         // 正例对照：同一行去掉行首 § 后照常命中列表（证明上面的「不命中」确是 § 的后果）
         List<ChatMarkdownPipeline.RenderedLine> control = pipeline.layout(
-                "- x", WHITE, 4000, 13, null, PASSTHROUGH);
+                "- x", WHITE, 4000, 13, 1.0F, null, PASSTHROUGH);
         Assert.assertEquals("\u2022 x", visible(control));
         Assert.assertEquals("标记段 + 正文段", 2, control.get(0).segments().size());
     }
@@ -213,7 +213,7 @@ public class ChatMarkdownPipelineTest {
     public void midLineSectionCodesStayLiteralAndColorNothing() {
         ChatMarkdownPipeline pipeline = new ChatMarkdownPipeline();
         List<ChatMarkdownPipeline.RenderedLine> out = pipeline.layout(
-                "甲 " + SECTION + "c红 " + SECTION + "f乙", WHITE, 4000, 13, null, PASSTHROUGH);
+                "甲 " + SECTION + "c红 " + SECTION + "f乙", WHITE, 4000, 13, 1.0F, null, PASSTHROUGH);
         Assert.assertEquals("逐字符原样: " + visible(out),
                 "甲 " + SECTION + "c红 " + SECTION + "f乙", visible(out));
         Assert.assertFalse("不得出现任何非基色（§ 不上色）: " + visible(out), anyNonBaseColor(out));
@@ -229,16 +229,16 @@ public class ChatMarkdownPipelineTest {
     public void cacheKeyIsExactlyTheStringFedToMarkdown() {
         ChatMarkdownPipeline pipeline = new ChatMarkdownPipeline();
         List<ChatMarkdownPipeline.RenderedLine> secForm = pipeline.layout(
-                SECTION + "a- x", WHITE, 4000, 13, null, PASSTHROUGH);
+                SECTION + "a- x", WHITE, 4000, 13, 1.0F, null, PASSTHROUGH);
         Assert.assertSame("同文本同参 ⇒ 同实例（每帧零解析不回归）", secForm,
-                pipeline.layout(SECTION + "a- x", WHITE, 4000, 13, null, PASSTHROUGH));
+                pipeline.layout(SECTION + "a- x", WHITE, 4000, 13, 1.0F, null, PASSTHROUGH));
         List<ChatMarkdownPipeline.RenderedLine> plainForm = pipeline.layout(
-                "- x", WHITE, 4000, 13, null, PASSTHROUGH);
+                "- x", WHITE, 4000, 13, 1.0F, null, PASSTHROUGH);
         Assert.assertNotSame("§ 版与纯净版语义不同（段落 vs 列表），必须分占条目", secForm, plainForm);
         Assert.assertNotEquals("不存在「转换后等值 ⇒ 共享条目」的第二轨",
                 visible(secForm), visible(plainForm));
         Assert.assertNotSame("baseColor 参与 key", secForm,
-                pipeline.layout(SECTION + "a- x", 0xFF101010, 4000, 13, null, PASSTHROUGH));
+                pipeline.layout(SECTION + "a- x", 0xFF101010, 4000, 13, 1.0F, null, PASSTHROUGH));
         // 逻辑行接缝（测试工厂）与视觉行同源：同一个 parse 输入读同一个结果
         List<MarkdownLayoutLine> logical = pipeline.logicalForTest(SECTION + "a- x", WHITE);
         Assert.assertEquals(1, logical.size());
@@ -257,9 +257,9 @@ public class ChatMarkdownPipelineTest {
         ChatMarkdownPipeline pipeline = new ChatMarkdownPipeline();
         Assert.assertTrue(pipeline.logicalForTest("", WHITE).isEmpty());
         Assert.assertTrue(pipeline.logicalForTest(null, WHITE).isEmpty());
-        Assert.assertTrue(pipeline.layout("", WHITE, 4000, 13, null, PASSTHROUGH).isEmpty());
-        Assert.assertTrue(pipeline.layout(null, WHITE, 4000, 13, null, PASSTHROUGH).isEmpty());
+        Assert.assertTrue(pipeline.layout("", WHITE, 4000, 13, 1.0F, null, PASSTHROUGH).isEmpty());
+        Assert.assertTrue(pipeline.layout(null, WHITE, 4000, 13, 1.0F, null, PASSTHROUGH).isEmpty());
         // 正例对照：非空文本确实开行，否则上面四个空判是空跑
-        Assert.assertEquals(1, pipeline.layout("x", WHITE, 4000, 13, null, PASSTHROUGH).size());
+        Assert.assertEquals(1, pipeline.layout("x", WHITE, 4000, 13, 1.0F, null, PASSTHROUGH).size());
     }
 }

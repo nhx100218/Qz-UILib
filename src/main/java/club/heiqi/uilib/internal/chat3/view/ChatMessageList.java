@@ -1107,7 +1107,7 @@ public final class ChatMessageList {
                         () -> ChatFontMetrics.scalePx(rt, ChatCardComposer.HUD_MAX_LINES * declaredLineHeight),
                         !style.isTtlFade(), declaredFontSize,
                         width -> markdown.layoutContent(message.getDisplayText(),
-                                baseTextColor, width, fontSize, segmentPostProcessor),
+                                baseTextColor, width, fontSize, rt.fontScale(), segmentPostProcessor),
                         (node, command) -> attachContentLink(rt, node, command, message.getRecord().getComponent(), frameMillis));
                 contentNode.appendChild(content.root);
                 documentNodes.add(content.root);
@@ -1136,7 +1136,7 @@ public final class ChatMessageList {
                     : message.getWrapWidthPx();
             List<ChatMarkdownPipeline.RenderedLine> markdownLines = system ? null
                     : markdown.layout(message.getDisplayText(), baseTextColor,
-                            textWrapWidthPx, fontSize, segmentPostProcessor, segmentFlowWrapper);
+                            textWrapWidthPx, fontSize, rt.fontScale(), segmentPostProcessor, segmentFlowWrapper);
             if (markdownLines != null && style.isTtlFade()) {
                 // T8 设计稿 §5.4(验收 22):HUD 形态 8 行截断 + 末行省略号(M5 起作用于
                 // L2 视觉行;行节点级 maxLines/ellipsis 防御仍保留在下方构建处)

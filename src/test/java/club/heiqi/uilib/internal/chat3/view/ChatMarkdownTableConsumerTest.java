@@ -199,7 +199,7 @@ public class ChatMarkdownTableConsumerTest {
         try (Fixture f = new Fixture(source, false, 800, 600, 0)) {
             SceneNode viewport = f.tableViewport();
             MarkdownPainter.ContentLayout layout = MarkdownPainter.layoutContent(MarkdownDocument.parse(source)
-                    .toLayoutContent(ChatMarkdownPipeline.chatStyleTable(), new TextStyle()),
+                    .toLayoutContent(ChatMarkdownPipeline.chatStyleTable(1.0F), new TextStyle()),
                     FontService.getInstance().getTextLayoutService(), box(viewport).getWidth(),
                     ChatMarkdownSettings.getSystemFontSizePx());
             PaintCommand ar = region(layout.getCommands(), a), br = region(layout.getCommands(), b);
@@ -259,7 +259,7 @@ public class ChatMarkdownTableConsumerTest {
             int font = ChatMarkdownSettings.getSystemFontSizePx();
             // 独立 L2 原始命令是几何 oracle；不读取 helper 自报的命中区域作为期望。
             MarkdownDocument.LayoutContent document = MarkdownDocument.parse(source)
-                    .toLayoutContent(ChatMarkdownPipeline.chatStyleTable(), new TextStyle())
+                    .toLayoutContent(ChatMarkdownPipeline.chatStyleTable(1.0F), new TextStyle())
                     .mapSegments(segments -> metrics.applyLatexLineHeightConstraint(segments, font,
                             ChatMarkdownSettings.getChatLineHeightPx(), ChatMarkdownSettings.getLatexMaxLineHeightFactor(),
                             ChatMarkdownSettings.getLatexShrinkFactor()));
@@ -373,6 +373,65 @@ public class ChatMarkdownTableConsumerTest {
         Assert.assertEquals("两格共享真实行位置", first.y, second.y);
         Assert.assertTrue("两格有不同横向位置，不能仅去掉 pipe", second.x > first.x);
         Assert.assertTrue("数据行独立于表头", capture.find("row0").y > first.y);
+    }
+
+    /**
+     * F42 门禁（内容路）：表格消息里的行内 code 字号必须随倍率换算。
+     *
+     * <p>表格/display math 消息走 {@code ChatMarkdownContent} + {@code ChatMarkdownPipeline#layoutContent}，
+     * 与气泡行路的 {@code layout} 是**两条**生产调用点 —— 只钉其中一条时，把另一条的
+     * {@code rt.fontScale()} 换回常量不会让任何判据变红（独立审核 2026-09-18 实测）。</p>
+     */
+    @Test public void tableInlineCodeFontFollowsFontScale() throws Exception {
+        String source = "| a | b |\n| --- | --- |\n| `gradle build` | y |";
+        try (Fixture f = new Fixture(source, true, 800, 600, 0)) {
+            driveFrames(f, 3, NOW);
+            Assert.assertEquals("100%：表格内行内 code = 设计值",
+                    ChatMarkdownSettings.getCodeFontSizePx(), deepCodeFontPx(f.root));
+            f.rt.setFontScale(200);
+            driveFrames(f, 3, NOW + 100L);
+            Assert.assertEquals("200%：表格内行内 code = 设计值 × 2（内容路漏传倍率即红）",
+                    Math.round(ChatMarkdownSettings.getCodeFontSizePx() * 2.0F), deepCodeFontPx(f.root));
+        }
+    }
+
+    /** 推进若干帧（内容路的叶子在首次真实 layout 拿到可用宽后才发布，故走夹具的 settle）。 */
+    private static void driveFrames(Fixture f, int frames, long baseMillis) {
+        for (int i = 1; i <= frames; i++) {
+            f.controller.tick(baseMillis + i * 16L);
+            f.settle();
+        }
+    }
+
+    /** 深度遍历取行内 code 段字号（内容路段在滚动宿主子树里，不在 HUD 行节点下）。 */
+    private static int deepCodeFontPx(SceneNode node) {
+        List<String> seen = new ArrayList<String>();
+        Integer found = findCodeFontPx(node, seen);
+        if (found == null) {
+            throw new AssertionError("未找到行内 code 段；树内段文本=" + seen);
+        }
+        return found.intValue();
+    }
+
+    private static Integer findCodeFontPx(SceneNode node, List<String> seen) {
+        List<TextSegment> segments = node.getSegments();
+        if (segments != null) {
+            for (TextSegment segment : segments) {
+                seen.add(segment.getText() + "/" + segment.getStyle().getFontSizePx());
+                // 按样式位判定（表格单元内行内 code 可能被换行拆成多个段，文本定位不稳）
+                if (segment.getStyle().isCodeSpan()) {
+                    return Integer.valueOf(segment.getStyle().resolveEffectiveFontSizePx(
+                            ChatMarkdownSettings.getChatFontSizePx()));
+                }
+            }
+        }
+        for (SceneNode child : node.__getChildren()) {
+            Integer hit = findCodeFontPx(child, seen);
+            if (hit != null) {
+                return hit;
+            }
+        }
+        return null;
     }
 
     private static void printMarkdownInto(ChatSceneController controller, String source) throws Exception {

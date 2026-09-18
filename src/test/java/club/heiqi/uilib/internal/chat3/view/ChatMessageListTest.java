@@ -1158,7 +1158,7 @@ public class ChatMessageListTest {
                 - 2 * ChatMarkdownSettings.getBubblePaddingX());
         List<ChatMarkdownPipeline.RenderedLine> sameSource = direct.layout(md,
                 ChatMarkdownSettings.getSystemTextArgb(), maxLine,
-                ChatMarkdownSettings.getSystemFontSizePx(), null, FIXED_WRAP);
+                ChatMarkdownSettings.getSystemFontSizePx(), 1.0F, null, FIXED_WRAP);
         Assert.assertTrue("反 ∅：内容足够长必然多行，实测 " + viewLines.size(),
                 viewLines.size() > 1);
         Assert.assertTrue("工况自检（反空跑）：本例必须不触 HUD 截断，实测 " + viewLines.size(),
@@ -2298,7 +2298,7 @@ public class ChatMessageListTest {
         ChatMarkdownPipeline pipeline = new ChatMarkdownPipeline();
         List<ChatMarkdownPipeline.RenderedLine> seam = pipeline.layout(
                 "- " + bodyA + nl + bodyB, 0xFFFFFFFF, 4000,
-                ChatMarkdownSettings.getChatFontSizePx(), null, null);
+                ChatMarkdownSettings.getChatFontSizePx(), 1.0F, null, null);
         ChatMarkdownPipeline.RenderedLine seamCont = null;
         for (ChatMarkdownPipeline.RenderedLine line : seam) {
             if (!line.segments().isEmpty() && line.segments().get(0).getText().startsWith("续行")) {
@@ -2408,7 +2408,7 @@ public class ChatMessageListTest {
         ChatMarkdownPipeline pipeline = new ChatMarkdownPipeline();
         List<ChatMarkdownPipeline.RenderedLine> seam = pipeline.layout(
                 "> - 甲项短首行" + nl + ">   " + cont, 0xFFFFFFFF, 4000,
-                ChatMarkdownSettings.getChatFontSizePx(), null, null);
+                ChatMarkdownSettings.getChatFontSizePx(), 1.0F, null, null);
         ChatMarkdownPipeline.RenderedLine seamCont = null;
         for (ChatMarkdownPipeline.RenderedLine line : seam) {
             if (!line.segments().isEmpty()
@@ -2575,6 +2575,93 @@ public class ChatMessageListTest {
                 lineNode.getFontSize());
     }
 
+    /**
+     * F42 门禁（列表层）：行内 code 段字号必须随用户倍率换算。
+     *
+     * <p><b>覆盖面</b>：只钉 {@code ChatMessageList} 里 {@code layout(...)} 那处生产调用点（气泡行路）。
+     * 另一处 {@code layoutContent(...)}（表格 / display math 内容路）由
+     * {@code ChatMarkdownTableConsumerTest#tableInlineCodeFontFollowsFontScale} 覆盖 —— 独立审核
+     * 2026-09-18 实测：只把 {@code layoutContent} 那处换成常量时，本条与管道层判据<b>全绿</b>。</p>
+     *
+     * <p>倍率取「装配后、构建前」写入；<b>运行中</b>改倍率的路径由
+     * {@link #inlineCodeFontFollowsFontScaleAfterAssembly} 覆盖。</p>
+     */
+    @Test
+    public void inlineCodeSegmentFontFollowsFontScale() {
+        Assert.assertEquals("100%：行内 code = font-code 设计值",
+                ChatMarkdownSettings.getCodeFontSizePx(), inlineCodeFontSizeAtScale(100));
+        Assert.assertEquals("200%：行内 code = 设计值 × 2（生产调用点漏传倍率即红）",
+                Math.round(ChatMarkdownSettings.getCodeFontSizePx() * 2.0F), inlineCodeFontSizeAtScale(200));
+    }
+
+    /** 倍率在「装配后、构建前」写入（headless `--font-scale` 同路），返回首行行内 code 段的生效字号。 */
+    private static int inlineCodeFontSizeAtScale(int percent) {
+        ChatSceneController controller = controller();
+        controller.setHostViewport(1920, 400);
+        controller.history().append(new ChatLineRecord(new ChatComponentText(
+                "<Bob> run `gradle build` now"), 1, T0));
+        controller.notifyDataChanged();
+        SceneRuntime rt = SceneTestEnvironments.runtime(new FixedTextMeasurer(8, 16));
+        rt.setFontScale(percent);
+        SceneNode root = controller.buildContent(rt);
+        // 生产同路：HUD 窗口树交给本窗口 runtime（与 S5-3 倍率用例同一装配）
+        club.heiqi.uilib.ui.scene.host.SceneHostAssembly.attachTree(rt, root);
+        controller.tick(T0);
+        rt.flush();
+        new SceneLayoutEngine(new FixedTextMeasurer(8, 16)).layout(root, new Constraints(1920, 400));
+        return inlineCodeSegmentFontSize(hudLineNodesOfFirstGroup(root));
+    }
+
+    /**
+     * F42 门禁（列表层·运行中切倍率）：**装配完成后**写倍率，段流必须重建。
+     *
+     * <p>钉的是「列表也吃有效字号指纹」这一环：只失效切分器/合成器而保留列表时，行节点解析字号会
+     * 按倍率到 26，而段样式（行内 code 字号等）停在 12 —— headless 的 `--font-scale` 在装配后、
+     * 首帧前写入，正好走这条；真机运行中改字号同理。修前实测该路径段样式恒 12。</p>
+     */
+    @Test
+    public void inlineCodeFontFollowsFontScaleAfterAssembly() {
+        ChatSceneController controller = controller();
+        controller.setHostViewport(1920, 400);
+        controller.history().append(new ChatLineRecord(new ChatComponentText(
+                "<Bob> run `gradle build` now"), 1, T0));
+        controller.notifyDataChanged();
+        SceneRuntime rt = SceneTestEnvironments.runtime(new FixedTextMeasurer(8, 16));
+        SceneNode root = controller.buildContent(rt);
+        club.heiqi.uilib.ui.scene.host.SceneHostAssembly.attachTree(rt, root);
+        controller.tick(T0);
+        rt.flush();
+        new SceneLayoutEngine(new FixedTextMeasurer(8, 16)).layout(root, new Constraints(1920, 400));
+        Assert.assertEquals("切倍率前：行内 code = 设计值",
+                ChatMarkdownSettings.getCodeFontSizePx(),
+                inlineCodeSegmentFontSize(hudLineNodesOfFirstGroup(root)));
+
+        rt.setFontScale(200);
+        // 倍率写完后按帧推进（与真机/headless 一致：失效信号在帧末提交，重建发生在后续帧）
+        for (int frame = 0; frame < 3; frame++) {
+            controller.tick(T0 + 1000L + frame * 16L);
+            rt.__tickFrame(1L);
+            rt.flush();
+            new SceneLayoutEngine(new FixedTextMeasurer(8, 16)).layout(root, new Constraints(1920, 400));
+        }
+        Assert.assertEquals("切倍率后：段流必须按新倍率重取（只放大行框不算）",
+                Math.round(ChatMarkdownSettings.getCodeFontSizePx() * 2.0F),
+                inlineCodeSegmentFontSize(hudLineNodesOfFirstGroup(root)));
+    }
+
+    /** 行节点里行内 code 段的生效字号（测试文本固定，按段文本定位；找不到即判据失效）。 */
+    private static int inlineCodeSegmentFontSize(List<SceneNode> lineNodes) {
+        for (SceneNode lineNode : lineNodes) {
+            for (TextSegment segment : lineNode.getSegments()) {
+                if ("gradle build".equals(segment.getText())) {
+                    return segment.getStyle().resolveEffectiveFontSizePx(
+                            ChatMarkdownSettings.getChatFontSizePx());
+                }
+            }
+        }
+        throw new AssertionError("未找到行内 code 段");
+    }
+
     // ==================== C 拍板:行级 markdown 规则(§3.5/§10.1) ====================
 
     @Test
@@ -2619,7 +2706,7 @@ public class ChatMessageListTest {
         ChatMarkdownPipeline pipeline = new ChatMarkdownPipeline();
         List<ChatMarkdownPipeline.RenderedLine> code = pipeline.layout(
                 "    - deep", 0xFFFFFFFF, 4000,
-                ChatMarkdownSettings.getChatFontSizePx(), null, null);
+                ChatMarkdownSettings.getChatFontSizePx(), 1.0F, null, null);
         Assert.assertEquals("4 空格缩进行 = 单行缩进代码块", 1, code.size());
         Assert.assertTrue("行身份 = CODE（不是 LIST）", code.get(0).isCode());
         Assert.assertEquals("缩进代码字面段不产生列表正文列（leftInset 恒 0）",
@@ -2627,7 +2714,7 @@ public class ChatMessageListTest {
         // 正对照：真有父项的嵌套项，其标记行由链给出祖先列（接缝 inset>0）
         List<ChatMarkdownPipeline.RenderedLine> flat = pipeline.layout(
                 "- top" + String.valueOf((char) 0x0A) + "  - deep", 0xFFFFFFFF, 4000,
-                ChatMarkdownSettings.getChatFontSizePx(), null, null);
+                ChatMarkdownSettings.getChatFontSizePx(), 1.0F, null, null);
         int markers = 0;
         boolean nestedMarkerShifted = false;
         for (ChatMarkdownPipeline.RenderedLine line : flat) {

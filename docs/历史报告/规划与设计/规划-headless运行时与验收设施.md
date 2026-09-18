@@ -1381,6 +1381,95 @@ headless 此前没有请求级入口 —— 于是 eco 走的 `#if UIB_TAP_BUDGE
 （同包其余三个探针宿主同口径）。审核另附一条归因结论：`--share-context` 多页序列「第 2 页起」的微小
 像素漂移由**页面切换本身**引起、与本轮无关（`text-probe` / `config` 同样复现），登记为既有现象。
 
+### F42 chat3 段流的倍率环境轴收口：行内 code 字号 + 字号变化失效通道（2026-09-18）
+
+**动机（两个缺陷，同一条链）**：
+
+1. F36 立了「设计量 → 生效量」唯一换算面（`MarkdownStyleTable.scaledDesignMetrics`），chat3 侧却漏了入口：
+   `ChatMarkdownPipeline.chatStyleTable()` 是**静态无参**方法、恒取 `MarkdownStyleTable.defaults()`
+   ⇒ **行内 code 字号永远停在设计值 12**，而正文按倍率走（100% 13 / 200% 26）。
+2. 更外层：`ChatSceneController` 的失效通道只到「切分器 / 合成器」（`composer()` 用有效字号做指纹），
+   **消息列表没有指纹**，而段流里的长度设计量（行内 code 字号、引用缩进与竖条、分隔线厚、表格内衬）都是列表在
+   **构建期**向管道取用的；组节点又走 keyed diff，在同一个挂载点上重算只会复用旧节点。结果是字号环境变化后
+   行节点解析字号已到 26，段样式仍停在 12。headless 的 `--font-scale` 在**装配之后、首帧之前**写入
+   （`HeadlessSession.applyEnvironment`），而探针宿主在装配期就建了树，正好落在这条失效通道里
+   ⇒ **该环境轴对 chat 页的段流量整体不生效**。
+
+**接入**：
+
+- `chatStyleTable()` → `chatStyleTable(float fontScale)`：先 `defaults().scaledDesignMetrics(fontScale)`，
+  再叠 chat3 覆盖（引用色、横线文本置空）；
+- 倍率沿真实数据流显式下传：`ContentEntry` 增 `fontScale` 字段（结构探测恒按 `1.0F`，字号不影响结构）、
+  `sameProjection` 增 `entry.fontScale == fontScale`、`layoutContent` 两个重载与 `layout` 增参、
+  `logicalCached` 增参；**两级缓存 key 都带倍率**（`cacheKey` 的 `#fs<float>` 段）；
+- `ChatMessageList.messageList()` 与 `composer()` **同式**补「有效字号指纹」（`messageListFontPx`）：
+  字号变了就用新字号重建列表实例，段流随之重取；
+- `ChatSceneController.tick` 的字号环境分支（原 RC-06 的 fontEpoch 检测）在置 `composer = null` 之外
+  置 `fontRebuildPending`，与形态切换同路走一次 `rebuildTree` —— 组节点走 keyed diff，**换挂载点才会重建**；
+- 生产调用点两处都传 `rt.fontScale()`：`ChatMessageList` L1110（`layoutContent`，内容路）与 L1139
+  （`layout`，气泡行路）。
+
+**验收（固定命令 + 一手读数）**：
+
+```bat
+build\headless\qz-shot-full.bat --page=chat --size=900x400 --text="Steve:正文与 `code` 对照" --font-scales=100,200 --out=out\f42final.png
+```
+
+| 产物 | 修复态 | 缺陷态（变异：`chatStyleTable` 钉 `scaledDesignMetrics(1.0F)`，含 `compileJava`） |
+|---|---|---|
+| `out\f42final-900x400.png`（fs=100） | 9934 B · `8b5ba9a6…` | 9934 B · `8b5ba9a6…`（**逐字节相同**：回归锚） |
+| `out\f42final-fs200-900x400.png`（fs=200） | 21798 B · `13af1490…` | 19511 B · `1db66d85…` |
+
+fs=200 档的产物差异（+11.7%）就是行内 code 12 → 24 的可见后果；fs=100 档逐字节不变，说明修复不碰不缩放档。
+
+**门禁（四条，各钉一条链）**：
+
+| 判据 | 钉什么 | 变异反应（脚本带 try/finally + 还原逐字节校验） |
+|---|---|---|
+| `ChatMarkdownPipelineFontScaleTest.inlineCodeFontSizeFollowsFontScale` | 管道：倍率进管道即生效 | 变异 `scaledDesignMetrics(fontScale)`→`(1.0F)` ⇒ 红 |
+| `ChatMessageListTest.inlineCodeSegmentFontFollowsFontScale` | 气泡行路 `layout()` 的生产调用点 | 同上 ⇒ 红（该变异会让本条与管道判据、内容路判据同时红） |
+| `ChatMessageListTest.inlineCodeFontFollowsFontScaleAfterAssembly` | **运行中**切倍率（装配后写入）时段流重建 | 变异「去掉 `fontRebuildPending`」⇒ 红 |
+| `ChatMarkdownTableConsumerTest.tableInlineCodeFontFollowsFontScale` | 内容路 `layoutContent()` 的生产调用点（表格 / display math） | 变异「只把 `layoutContent` 那处 `rt.fontScale()` 换常量」⇒ 红 |
+
+最后一条是**独立审核逼出来的覆盖缺口**：补之前，把 `layoutContent` 那处换成常量时其余判据全绿
+（审核者实测 + Lead 复核）。四条判据都避开 `MarkdownStyleTable.getCodeFontSizePx()`（包内可见，跨包不可读）。
+
+**过程中的三个坑（如实记录）**：
+
+1. **出图启动器不编译**：缺陷态出图必须先 `gradlew compileJava`，否则启动器用的还是上一次编译的类 ——
+   首次做修复前/后对照时两态产物逐字节相同，差点把「修复无效」写成结论。
+2. **内容路判据不能在 `ChatMessageListTest` 里造**：表格 / display math 路由要求消息是 `printMarkdown`
+   递交形（`MARKDOWN_LEFT`），普通 `ChatLineRecord` 只会落系统路（树上只有原始文本段）。该判据改放在已有
+   `printMarkdown` 夹具的 `ChatMarkdownTableConsumerTest` 里。
+3. **表格单元里的行内 code 会被换行拆段**（实测段文本落在 `gradle` / `build` 两段），判据按
+   `TextStyle.isCodeSpan()` 定位而不是文本匹配。
+
+**边界（如实登记）**：
+
+1. 换算面本身齐、消费方已逐页核：生产侧只有两处入口 —— `MarkdownPage`（`180-182` / `336-341`）早已
+   `scaledDesignMetrics(rt.fontScale())`，`ChatMarkdownPipeline` 本轮修；两个静态兜底表
+   （`MarkdownInlineParser.CODE_TABLE_FALLBACK`、`MarkdownDocument.FALLBACK_TABLE`）只在调用方传
+   `styles == null` 的兼容入口用到（无倍率来源，属既有设计）；行内 code 字号的唯一生产来源就是样式表。
+2. **表格内衬 / 边框厚等表格几何的倍率换算未单独钉住**（独立审核附注）：表格单元经 `LayoutContent.getTables()`
+   另行送达 L2，本轮判据钉的是表格里的行内 code 段。
+3. `--share-context` 多页序列「第 2 页起」的微小像素漂移是既有现象（与页面切换本身有关，F41 已登记），本轮未复核。
+
+**独立审核与处置（零上下文子代理，2026-09-18）**：总判**有条件通过**。它一手复现了设计字号 13 / 12 与
+200% 的 26 / 24、确认**无双重缩放**（`resolveEffectiveFontSizePx` 显式绝对值优先、不乘倍率）、缓存 key 与调用点
+无遗漏，并做了 6 组变异（含它追加的缓存维度）与全量门禁（5800+ 用例绿）。它指出的四条【应当修】均已处置：
+
+1. **`layoutContent` 链零门禁**（只改那处时其余判据全绿）⇒ 补
+   `ChatMarkdownTableConsumerTest.tableInlineCodeFontFollowsFontScale`，复跑变异确认变红；
+2. **运行中切倍率段流不刷新应修、不宜降级为下一轮** ⇒ 本轮修（列表字号指纹 + 字号变化整树重建），补
+   `inlineCodeFontFollowsFontScaleAfterAssembly` 判据，并用 headless 出图确认环境轴恢复生效；
+3. **验收数据与文件名失实** ⇒ 删除无法复现的旧读数（11228 / 21592 / 26656 B 与 `-fs100` 后缀名），改用
+   上面的固定命令 + 可复现读数（9934 / 21798 / 19511 B 与 sha256）；
+4. **门禁表两条描述与实测相反** ⇒ 更正：变异「样式表钉 1.0F」会让**多层判据同时红**（Lead 复核确认）；变异
+   「两处调用点换常量」会让气泡行路判据红（审核者该组读数与 Lead 两次复现不一致，以一手复现为准）。
+
+它另有两条【建议】未在本轮落地并如实登记：100% 档的自动回归锚（现由产物 sha256 人工比对承担）、
+表格几何倍率的独立确认（见边界 2）。
+
 ## 三、目标形态
 
 **四件套 + 一个出口：**

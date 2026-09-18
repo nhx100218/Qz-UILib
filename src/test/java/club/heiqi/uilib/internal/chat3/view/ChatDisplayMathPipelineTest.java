@@ -48,8 +48,8 @@ public class ChatDisplayMathPipelineTest {
         String source = "$$" + TEX + "$$";
         assertFalse(pipeline.hasTables(source));
         assertTrue(pipeline.hasDisplayMath(source));
-        ChatMarkdownPipeline.RenderedContent first = pipeline.layoutContent(source, -1, 240, FONT, null, service(), 1);
-        assertSame(first, pipeline.layoutContent(source, -1, 240, FONT, null, service(), 1));
+        ChatMarkdownPipeline.RenderedContent first = pipeline.layoutContent(source, -1, 240, FONT, 1.0F, null, service(), 1);
+        assertSame(first, pipeline.layoutContent(source, -1, 240, FONT, 1.0F, null, service(), 1));
         assertEquals(1, parses.get());
         assertTrue(pipeline.hasDisplayMath("before $$x$$ after"));
         assertTrue(pipeline.hasDisplayMath("> - $$x$$"));
@@ -68,8 +68,8 @@ public class ChatDisplayMathPipelineTest {
             return service().applyLatexLineHeightConstraint(segments, font, lineHeight, 1.0F, 0.25F);
         };
         String block = "$$" + TEX + "$$";
-        ChatMarkdownPipeline.RenderedContent raw = pipeline.layoutContent(block, -1, 240, FONT, null, service(), 1);
-        ChatMarkdownPipeline.RenderedContent processed = pipeline.layoutContent(block, -1, 240, FONT, processor, service(), 1);
+        ChatMarkdownPipeline.RenderedContent raw = pipeline.layoutContent(block, -1, 240, FONT, 1.0F, null, service(), 1);
+        ChatMarkdownPipeline.RenderedContent processed = pipeline.layoutContent(block, -1, 240, FONT, 1.0F, processor, service(), 1);
         assertEquals("块公式不进入旧行内限高处理器", 0, mathProcessed.get());
         assertEquals(raw.height, processed.height);
         TextSegment segment = formulas(processed).get(0);
@@ -79,7 +79,7 @@ public class ChatDisplayMathPipelineTest {
         assertTrue(processed.height >= service().getLatexBox(segment, FONT).getTotalHeight());
 
         ChatMarkdownPipeline.RenderedContent inline = pipeline.layoutContent("before $$" + TEX + "$$ after",
-                -1, 320, FONT, processor, service(), 1);
+                -1, 320, FONT, 1.0F, processor, service(), 1);
         assertTrue("行内 DISPLAY 仍经过调用方处理", mathProcessed.get() > 0);
         TextSegment inlineMath = formulas(inline).get(0);
         assertEquals(MathStyleOverride.DISPLAY, inlineMath.getLatexMathStyle());
@@ -96,9 +96,9 @@ public class ChatDisplayMathPipelineTest {
             return out;
         };
         ChatMarkdownPipeline.RenderedContent plain = pipeline.layoutContent("$$" + TEX + "$$", -1,
-                320, FONT, copy, service(), 1);
+                320, FONT, 1.0F, copy, service(), 1);
         ChatMarkdownPipeline.RenderedContent list = pipeline.layoutContent("- $$" + TEX + "$$", -1,
-                320, FONT, copy, service(), 1);
+                320, FONT, 1.0F, copy, service(), 1);
         assertEquals(plain.height, list.height);
         assertEquals(1, formulas(list).size());
         int textCommands = 0;

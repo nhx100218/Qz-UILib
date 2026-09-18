@@ -6,6 +6,7 @@ import java.util.List;
 import org.junit.Assert;
 import org.junit.Test;
 
+import club.heiqi.uilib.font.layout.TextSegment;
 import club.heiqi.uilib.internal.chat3.ChatMarkdownSettings;
 import club.heiqi.uilib.ui.scene.FixedTextMeasurer;
 import club.heiqi.uilib.ui.scene.runtime.SceneRuntime;
@@ -63,15 +64,51 @@ public class ChatMarkdownPipelineFontScaleTest {
         int scaled = Math.round(design * 1.5F);
 
         List<ChatMarkdownPipeline.RenderedLine> first =
-                pipeline.layout(BODY, -1, 200, design, null, null);
+                pipeline.layout(BODY, -1, 200, design, 1.0F, null, null);
         List<ChatMarkdownPipeline.RenderedLine> again =
-                pipeline.layout(BODY, -1, 200, design, null, null);
+                pipeline.layout(BODY, -1, 200, design, 1.0F, null, null);
         Assert.assertSame("同参必须命中同一缓存对象（缓存仍生效）", first, again);
 
         List<ChatMarkdownPipeline.RenderedLine> bigger =
-                pipeline.layout(BODY, -1, 200, scaled, null, null);
+                pipeline.layout(BODY, -1, 200, scaled, 1.0F, null, null);
         Assert.assertNotSame("字号不同不得命中旧缓存（字号/倍率必须入 key）", first, bigger);
         Assert.assertTrue("字号变大必须重排：行数 " + first.size() + " → " + bigger.size(),
                 bigger.size() > first.size());
+    }
+
+    /**
+     * 行内 code 字号必须随倍率换算。
+     *
+     * <p>它守的是 F36 的 chat3 侧残留：{@code ChatMarkdownPipeline.chatStyleTable()} 此前是静态无参、
+     * 恒取 {@code MarkdownStyleTable.defaults()} ⇒ 行内 code 字号停在设计值，倍率 200% 下正文放大到
+     * 26（13\u00d72）而 code 仍是 12（出图肉眼可见：code 被挤成小字并折行）。修法是让倍率经 {@code layout} /
+     * {@code layoutContent} <b>显式</b>流进样式表，并进两级缓存 key。</p>
+     *
+     * <p>判据取<b>管道层</b>而不是样式表 getter：钉「倍率真的流到了段流」，而不只是「某个换算函数
+     * 算对了」—— 后者在漏传倍率时照样能绿。</p>
+     */
+    @Test
+    public void inlineCodeFontSizeFollowsFontScale() {
+        ChatMarkdownPipeline pipeline = new ChatMarkdownPipeline();
+        int design = ChatMarkdownSettings.getChatFontSizePx();
+        String text = "前 " + (char) 96 + "code" + (char) 96 + " 后";
+        int codeAt100 = codeSegmentFontSize(pipeline.layout(text, -1, 400, design, 1.0F, null, null));
+        int codeAt200 = codeSegmentFontSize(pipeline.layout(text, -1, 400,
+                Math.round(design * 2.0F), 2.0F, null, null));
+        Assert.assertTrue("行内 code 字号必须为正（未取到段流样式）", codeAt100 > 0);
+        Assert.assertEquals("200%：行内 code 字号 = 100% 的 2 倍（恒为设计值即红）",
+                codeAt100 * 2, codeAt200);
+    }
+
+    /** 取渲染行里行内 code 段的字号（测试文本固定，按段文本定位）。 */
+    private static int codeSegmentFontSize(List<ChatMarkdownPipeline.RenderedLine> lines) {
+        for (ChatMarkdownPipeline.RenderedLine line : lines) {
+            for (TextSegment segment : line.segments()) {
+                if ("code".equals(segment.getText())) {
+                    return segment.getStyle().getFontSizePx();
+                }
+            }
+        }
+        throw new AssertionError("未找到行内 code 段");
     }
 }

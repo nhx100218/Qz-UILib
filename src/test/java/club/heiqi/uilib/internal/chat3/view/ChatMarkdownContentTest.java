@@ -55,38 +55,38 @@ public class ChatMarkdownContentTest {
             return segments;
         };
         assertTrue(pipeline.hasTables(SOURCE));
-        ChatMarkdownPipeline.RenderedContent first = pipeline.layoutContent(SOURCE, -1, 220, 14, processor, metrics, 1);
+        ChatMarkdownPipeline.RenderedContent first = pipeline.layoutContent(SOURCE, -1, 220, 14, 1.0F, processor, metrics, 1);
         int measured = metrics.calls;
         int mapped = maps.get();
         assertTrue(measured > 0);
         assertTrue(mapped > 0);
-        assertSame(first, pipeline.layoutContent(SOURCE, -1, 220, 14, processor, metrics, 1));
+        assertSame(first, pipeline.layoutContent(SOURCE, -1, 220, 14, 1.0F, processor, metrics, 1));
         assertTrue(pipeline.hasTables(SOURCE));
         assertEquals(1, parses.get());
         assertEquals(mapped, maps.get());
         assertEquals(measured, metrics.calls);
-        ChatMarkdownPipeline.RenderedContent narrow = pipeline.layoutContent(SOURCE, -1, 100, 14, processor, metrics, 1);
+        ChatMarkdownPipeline.RenderedContent narrow = pipeline.layoutContent(SOURCE, -1, 100, 14, 1.0F, processor, metrics, 1);
         assertNotSame(first, narrow);
         assertTrue(narrow.height > first.height);
         assertEquals(mapped, maps.get());
         measured = metrics.calls;
-        assertSame(first, pipeline.layoutContent(SOURCE, -1, 220, 14, processor, metrics, 1));
+        assertSame(first, pipeline.layoutContent(SOURCE, -1, 220, 14, 1.0F, processor, metrics, 1));
         assertEquals("两个 occurrence 交替读宽不重度量", measured, metrics.calls);
-        ChatMarkdownPipeline.RenderedContent font = pipeline.layoutContent(SOURCE, -1, 100, 18, processor, metrics, 1);
+        ChatMarkdownPipeline.RenderedContent font = pipeline.layoutContent(SOURCE, -1, 100, 18, 1.0F, processor, metrics, 1);
         assertNotSame(narrow, font);
         assertTrue(maps.get() > mapped);
-        ChatMarkdownPipeline.RenderedContent color = pipeline.layoutContent(SOURCE, 0xFF123456, 100, 18, processor, metrics, 1);
+        ChatMarkdownPipeline.RenderedContent color = pipeline.layoutContent(SOURCE, 0xFF123456, 100, 18, 1.0F, processor, metrics, 1);
         assertNotSame(font, color);
-        ChatMarkdownPipeline.RenderedContent epoch = pipeline.layoutContent(SOURCE, 0xFF123456, 100, 18, processor, metrics, 2);
+        ChatMarkdownPipeline.RenderedContent epoch = pipeline.layoutContent(SOURCE, 0xFF123456, 100, 18, 1.0F, processor, metrics, 2);
         assertNotSame(color, epoch);
-        assertNotSame(epoch, pipeline.layoutContent(SOURCE, 0xFF123456, 100, 18, (s, f) -> s, metrics, 2));
-        assertNotSame(epoch, pipeline.layoutContent(SOURCE, 0xFF123456, 100, 18, processor, new MarkdownCountingMetrics(), 2));
+        assertNotSame(epoch, pipeline.layoutContent(SOURCE, 0xFF123456, 100, 18, 1.0F, (s, f) -> s, metrics, 2));
+        assertNotSame(epoch, pipeline.layoutContent(SOURCE, 0xFF123456, 100, 18, 1.0F, processor, new MarkdownCountingMetrics(), 2));
         assertEquals("布局失效不重复语法解析", 1, parses.get());
     }
 
     @Test public void bareUrlIsLinkifiedBeforeCellWrapAndTailContentIsRetained() {
         ChatMarkdownPipeline pipeline = new ChatMarkdownPipeline();
-        ChatMarkdownPipeline.RenderedContent plan = pipeline.layoutContent(SOURCE, -1, 95, 14, null,
+        ChatMarkdownPipeline.RenderedContent plan = pipeline.layoutContent(SOURCE, -1, 95, 14, 1.0F, null,
                 new MarkdownCountingMetrics(), 1);
         int linked = 0;
         StringBuilder text = new StringBuilder();
@@ -111,7 +111,7 @@ public class ChatMarkdownContentTest {
         int[] epoch = {1};
         rt.mount(root, () -> {
             content[0] = ChatMarkdownContent.create(rt, () -> 40, true, 14,
-                    width -> pipeline.layoutContent(SOURCE, -1, width, 14, null, metrics, epoch[0]), (node, command) -> {});
+                    width -> pipeline.layoutContent(SOURCE, -1, width, 14, 1.0F, null, metrics, epoch[0]), (node, command) -> {});
             return content[0].root;
         });
         SceneLayoutEngine engine = new SceneLayoutEngine(new FixedTextMeasurer());
@@ -152,7 +152,7 @@ public class ChatMarkdownContentTest {
         ChatMarkdownContent.Result[] content = {null};
         rt.mount(root, () -> {
             content[0] = ChatMarkdownContent.create(rt, () -> 30, false, 14,
-                    width -> pipeline.layoutContent(SOURCE, -1, width, 14, null, metrics, 1),
+                    width -> pipeline.layoutContent(SOURCE, -1, width, 14, 1.0F, null, metrics, 1),
                     (node, command) -> fail("HUD 不装链接输入"));
             return content[0].root;
         });

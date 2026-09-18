@@ -154,9 +154,20 @@ public final class ChatSceneController {
     /** 两个切分器当前采用的有效字号（设计值 × 用户倍率）；与当前有效值不等即重建（RC-06）。 */
     private int layouterFontPx = -1;
     private int systemLayouterFontPx = -1;
+    private int messageListFontPx = -1;
     /** 已应用的 scene 字号环境代；变化 ⇒ 切分器重建 + 结构版本 +1（RC-06）。 */
     private long appliedFontEpoch = Long.MIN_VALUE;
+    /** 字号环境变化待整树重建（F42：段流在构建期取用长度设计量，组节点 keyed diff 不会重取）。 */
+    private boolean fontRebuildPending;
     private ChatMessageList messageList;
+    /**
+     * 消息列表渲染器当前采用的有效字号（设计值 × 用户倍率）；与当前有效值不等即重建（F42）。
+     *
+     * <p>为什么列表也要字号指纹：段流里的长度设计量（行内 code 字号、引用缩进与竖条、分隔线厚、
+     * 表格内衬）由 {@code ChatMessageList} 在<b>构建期</b>向 {@code ChatMarkdownPipeline} 取用，
+     * 行节点的解析字号却在渲染期按倍率生效 —— 只失效切分器/合成器（{@code composer()}）而保留列表，
+     * 这些长度量会停在旧倍率值（F42 实测：行节点解析字号已 26、段样式仍 12）。</p>
+     */
 
     /** 结构版本(消息/滚动/设置变化 +1,驱动组列表与树重建)。 */
     private final Signal<Integer> contentVersion = Signal.create(Integer.valueOf(0));
@@ -440,6 +451,11 @@ public final class ChatSceneController {
                 appliedFontEpoch = fontEpoch;
                 composer = null;
                 contentVersion.set(Integer.valueOf(contentVersion.get().intValue() + 1));
+                // F42：字号变化不止影响断行点 —— 段流里的长度设计量（行内 code 字号、引用缩进与竖条、
+                // 分隔线厚、表格内衬）由列表在**构建期**取用，而组节点走 keyed diff：在同一个挂载点上
+                // 重算只会复用旧节点，段流不重取（实测行节点解析字号已 26、段样式仍 12）。故字号变化
+                // 与形态切换同路，标记一次整树重建（换挂载点才会重建组节点）。
+                fontRebuildPending = true;
             }
         }
         DisplayStateMachine.Phase phase = machine.tick(nowMillis,
@@ -493,7 +509,8 @@ public final class ChatSceneController {
             notifyDataChanged();
         }
         transitionFrozen = frozenNow;
-        if (runtime != null && root != null && hudNow != hudTreeBuilt) {
+        if (runtime != null && root != null && (hudNow != hudTreeBuilt || fontRebuildPending)) {
+            fontRebuildPending = false;
             rebuildTree(nowMillis);
         }
         // 渐入通道复位:机器离开 HUD(进入打开方向)即清渐入起点——打开方向根 opacity
@@ -1255,20 +1272,29 @@ public final class ChatSceneController {
         return history.setMaxScrollOffset(ceilingLines);
     }
 
-    /** 懒取消息列表渲染器(依赖段解析器;供 ChatContainer 复用)。 */
+    /**
+     * 懒取消息列表渲染器(依赖段解析器;供 ChatContainer 复用)。
+     *
+     * <p>F42：与 {@link #composer()} 同式 —— 以<b>有效字号</b>为指纹，倍率变化即用新字号重建列表，
+     * 让段流里的长度设计量（行内 code 字号、引用缩进、分隔线厚、表格内衬）与渲染字号同源。
+     * 少了这一环，装配期建树后再写入倍率（headless {@code --font-scale} 的作用点）与真机运行中
+     * 改字号两条路都只会放大行框、不重取段流。</p>
+     */
     ChatMessageList messageList() {
+        int chatPx = effectiveChatFontPx();
         ChatMessageList current = messageList;
-        if (current == null) {
-            synchronized (this) {
-                current = messageList;
-                if (current == null) {
-                    current = new ChatMessageList(segmentParser, segmentMeasurer,
-                            latexLineHeightConstraint(), segmentFlowWrapper);
-                    messageList = current;
-                }
-            }
+        if (current != null && messageListFontPx == chatPx) {
+            return current;
         }
-        return current;
+        synchronized (this) {
+            if (messageList != null && messageListFontPx == chatPx) {
+                return messageList;
+            }
+            messageList = new ChatMessageList(segmentParser, segmentMeasurer,
+                    latexLineHeightConstraint(), segmentFlowWrapper);
+            messageListFontPx = chatPx;
+            return messageList;
+        }
     }
 
     /**

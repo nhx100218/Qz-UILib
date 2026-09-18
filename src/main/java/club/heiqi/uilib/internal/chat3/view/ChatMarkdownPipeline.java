@@ -115,6 +115,8 @@ final class ChatMarkdownPipeline {
         final boolean displayMath;
         int baseColor;
         int font;
+        /** 构建 projection 时用的字号倍率（换倍率必须重建 projection）。 */
+        float fontScale = 1.0F;
         int epoch;
         int secondaryColor;
         int linkColor;
@@ -126,7 +128,9 @@ final class ChatMarkdownPipeline {
 
         ContentEntry(MarkdownDocument document) {
             this.document = document;
-            MarkdownDocument.LayoutContent content = document.toLayoutContent(chatStyleTable(), new TextStyle());
+            // 构造期只探测结构（tables / displayMath，与字号无关），故取中性倍率；
+            // 真正的 projection 在 layoutContent 里按真实倍率重建。
+            MarkdownDocument.LayoutContent content = document.toLayoutContent(chatStyleTable(1.0F), new TextStyle());
             tables = !content.getTables().isEmpty();
             boolean math = false;
             for (MarkdownLayoutLine line : content.getLines()) {
@@ -158,20 +162,21 @@ final class ChatMarkdownPipeline {
         return contentEntry(source).displayMath;
     }
 
-    synchronized RenderedContent layoutContent(String source, int baseColor, int width, int font,
+    synchronized RenderedContent layoutContent(String source, int baseColor, int width, int font, float fontScale,
             ChatMessageList.SegmentPostProcessor processor) {
         FontService fonts = FontService.getInstance();
-        return layoutContent(source, baseColor, width, font, processor,
+        return layoutContent(source, baseColor, width, font, fontScale, processor,
                 fonts.getTextLayoutService(), DefaultTextMeasureService.getInstance().getEpoch());
     }
 
-    synchronized RenderedContent layoutContent(String source, int baseColor, int width, int font,
+    synchronized RenderedContent layoutContent(String source, int baseColor, int width, int font, float fontScale,
             ChatMessageList.SegmentPostProcessor processor, TextLayoutService measurer, int epoch) {
         ContentEntry entry = contentEntry(source);
         int available = Math.max(1, width);
         int secondaryColor = ChatMarkdownSettings.getTextSecondaryArgb();
         int linkColor = ChatMarkdownSettings.getLinkArgb();
         boolean sameProjection = entry.projection != null && entry.baseColor == baseColor && entry.font == font
+                && entry.fontScale == fontScale
                 && entry.epoch == epoch && entry.secondaryColor == secondaryColor && entry.linkColor == linkColor
                 && entry.processor == processor && entry.measurer == measurer;
         RenderedContent hit = sameProjection ? entry.rendered.get(available) : null;
@@ -179,7 +184,7 @@ final class ChatMarkdownPipeline {
         if (!sameProjection) {
             TextStyle base = new TextStyle();
             base.setColor(baseColor);
-            MarkdownDocument.LayoutContent raw = entry.document.toLayoutContent(chatStyleTable(), base);
+            MarkdownDocument.LayoutContent raw = entry.document.toLayoutContent(chatStyleTable(fontScale), base);
             final int[] mappedLine = {0};
             entry.projection = raw.mapSegments(segments -> {
                 int lineIndex = mappedLine[0]++;
@@ -192,6 +197,7 @@ final class ChatMarkdownPipeline {
             entry.rendered.clear();
             entry.baseColor = baseColor;
             entry.font = font;
+            entry.fontScale = fontScale;
             entry.epoch = epoch;
             entry.secondaryColor = secondaryColor;
             entry.linkColor = linkColor;
@@ -360,7 +366,11 @@ final class ChatMarkdownPipeline {
      *                    原样显示，本层不解释）
      * @param baseColor     气泡正文基础色（ARGB）
      * @param maxWidthPx    定行宽（与行切分器同口径；{@code <= 0} = 只按行边界硬断）
-     * @param fontSizePx    正文基准字号（UI px）
+     * @param fontSizePx    正文基准字号（UI px，<b>生效</b>值——调用方已按倍率换算）
+     * @param fontScale     用户级缩放倍率（{@code 1.0F} = 100%）：把样式表里的<b>长度类设计量</b>
+     *                      （行内 code 字号、引用步长与竖条、分隔线厚、表格内衬与边框、标题增量）
+     *                      换算成生效值。与 {@code fontSizePx} 分工不同、两者都进缓存 key：
+     *                      F42 前本层恒取设计表 ⇒ 200% 下行内 code 停在 12 而正文 26
      * @param postProcessor 段流后处理（T8 LaTeX 行高约束；null = 关闭）
      * @param wrapOverride  视觉行换行注入（headless 测试用与行切分器同源度量的替身；
      *                      null = 生产路 {@link MarkdownPainter#wrapLayoutLines} +
@@ -371,16 +381,16 @@ final class ChatMarkdownPipeline {
      *         旧句「至少一行」与两代实现均不符，C7 就地更正并由锁钉住现状）
      */
     synchronized List<RenderedLine> layout(String messageText, int baseColor, int maxWidthPx,
-            int fontSizePx, ChatMessageList.SegmentPostProcessor postProcessor,
+            int fontSizePx, float fontScale, ChatMessageList.SegmentPostProcessor postProcessor,
             ChatMessageList.SegmentFlowWrapper wrapOverride) {
         // C7 划界（细账见规划 §二之八 C7）：两级缓存 key = **最终喂进 MarkdownDocument.parse
         // 的那个字符串**@基础色#配色代。转换器已退役 ⇒ 本方法入参 text 就是 parse 的输入，
         // 「一处用原文、一处用结构内容」的双轨在结构上不存在（key 与 parse 同源同值，
         // 单一真相）。baseColor 与配色代指纹同在 key 上 ⇒ 同 key ⇒ 同一语义输入。
         String text = messageText == null ? "" : messageText;
-        List<MarkdownLayoutLine> logical = logicalCached(text, baseColor, postProcessor, fontSizePx);
+        List<MarkdownLayoutLine> logical = logicalCached(text, baseColor, postProcessor, fontSizePx, fontScale);
         int epoch = DefaultTextMeasureService.getInstance().getEpoch();
-        String key = cacheKey(text, baseColor) + '#' + maxWidthPx + '#' + fontSizePx + '#' + epoch
+        String key = cacheKey(text, baseColor, fontScale) + '#' + maxWidthPx + '#' + fontSizePx + '#' + epoch
                 + (wrapOverride == null ? "" : "#w");
         List<RenderedLine> hit = linesCache.get(key);
         if (hit != null) {
@@ -424,12 +434,15 @@ final class ChatMarkdownPipeline {
      * L1 公共面（将来富文本 component 入口用），但 § 相关代码一律不得再经它——本层已无 §
      * 相关代码。缓存 key 恒等于此处喂进 {@code parse} 的 {@code text}（单轨，见
      * {@link #cacheKey}）。</p>
+     *
+     * <p>F42：{@code fontScale} 是 key 的一部分——长度类设计量（行内 code 字号等）随倍率变，
+     * 倍率不同即不同段流；后处理分支另带 {@code #p} + 基准字号（LaTeX 行高约束吃字号）。</p>
      */
     private List<MarkdownLayoutLine> logicalCached(String text, int baseColor,
-            ChatMessageList.SegmentPostProcessor postProcessor, int fontSizePx) {
+            ChatMessageList.SegmentPostProcessor postProcessor, int fontSizePx, float fontScale) {
         // RC-06：后处理（LaTeX 行高约束）吃基准字号 ⇒ 字号必须并入逻辑行缓存 key；
         // 否则 150% 下同一 text 命中 100% 的旧逻辑行，公式缩放判定与渲染字号脱钩。
-        String key = cacheKey(text, baseColor) + (postProcessor == null ? "" : "#p" + fontSizePx);
+        String key = cacheKey(text, baseColor, fontScale) + (postProcessor == null ? "" : "#p" + fontSizePx);
         List<MarkdownLayoutLine> hit = logicalCache.get(key);
         if (hit != null) {
             return hit;
@@ -439,7 +452,7 @@ final class ChatMarkdownPipeline {
         // 显式非表格消息已为通道判断解析过；玩家路未命中仍保持原解析入口。
         ContentEntry known = contentCache.get(text);
         MarkdownDocument document = known == null ? MarkdownDocument.parse(text) : known.document;
-        List<MarkdownLayoutLine> logical = document.toLayoutLines(chatStyleTable(), base);
+        List<MarkdownLayoutLine> logical = document.toLayoutLines(chatStyleTable(fontScale), base);
         List<MarkdownLayoutLine> processed = new ArrayList<MarkdownLayoutLine>(logical.size());
         for (int i = 0; i < logical.size(); i++) {
             MarkdownLayoutLine line = logical.get(i);
@@ -459,7 +472,7 @@ final class ChatMarkdownPipeline {
     /** 测试工厂：消息本体 → 逻辑行（生产同路同缓存；chat3 markdown 入口的直读缝）。 */
     synchronized List<MarkdownLayoutLine> logicalForTest(String messageText, int baseColor) {
         return logicalCached(messageText == null ? "" : messageText, baseColor, null,
-                ChatMarkdownSettings.getChatFontSizePx());
+                ChatMarkdownSettings.getChatFontSizePx(), 1.0F);
     }
 
     /** markdown 行 → RenderedLine 视图（块模型/L1 类型到此为止，不再外传）。 */
@@ -495,8 +508,10 @@ final class ChatMarkdownPipeline {
      * 分隔线由行身份（RULE）+ SceneNode 背景条（L2 侧 BACKGROUND 命令）表达，
      * 不再是一串 '-'（用户裁定三项之一；规划 §二之三 M7 注记）。</p>
      */
-    static MarkdownStyleTable chatStyleTable() {
-        MarkdownStyleTable table = MarkdownStyleTable.defaults();
+    static MarkdownStyleTable chatStyleTable(float fontScale) {
+        // 长度类设计量必须按倍率换算（F36 立的「设计 → 生效」唯一换算面）：此前这里恒取 defaults()，
+        // 行内 code 字号停在设计值 12 ⇒ 倍率 200% 下正文 26（13×2）而 code 12（独立复核与出图均可见）。
+        MarkdownStyleTable table = MarkdownStyleTable.defaults().scaledDesignMetrics(fontScale);
         table.setQuoteTextColor(ChatMarkdownSettings.getTextSecondaryArgb());
         table.setThematicBreakText("");
         return table;
@@ -508,9 +523,12 @@ final class ChatMarkdownPipeline {
      * <p>C7 第 8 条（单轨）：{@code text} 形参就是 {@code logicalCached} 里喂进
      * {@code MarkdownDocument.parse} 的那个字符串——装配侧（{@code ChatCardComposer}
      * 三条分支）与缓存侧共用同一个值，不留「一处用原文、一处用结构内容」的两把尺。</p>
+     *
+     * <p>F42：{@code #fs<倍率>} 段由 {@code fontScale} 决定——样式表的长度设计量按倍率换算，
+     * 故倍率与配色代同列，都是「同一段文本 ⇒ 同一段流」的语义输入。</p>
      */
-    private static String cacheKey(String text, int baseColor) {
-        return text + '@' + Integer.toHexString(baseColor) + '#'
+    private static String cacheKey(String text, int baseColor, float fontScale) {
+        return text + '@' + Integer.toHexString(baseColor) + "#fs" + fontScale + '#'
                 + Integer.toHexString(ChatMarkdownSettings.getTextSecondaryArgb()) + '#'
                 + Integer.toHexString(ChatMarkdownSettings.getLinkArgb());
     }
