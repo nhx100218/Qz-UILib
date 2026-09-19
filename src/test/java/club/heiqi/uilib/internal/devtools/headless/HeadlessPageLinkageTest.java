@@ -61,6 +61,7 @@ public class HeadlessPageLinkageTest {
     private static final Pattern DISPATCHED = Pattern.compile("dispatched=(\\d+)");
     private static final Pattern SEARCH_RESULTS = Pattern.compile("Search results \\((\\d+)\\)");
     private static final Pattern NODE_LINE = Pattern.compile("(r[0-9/]+) SceneNode(?: \"[^\"]*\")? @\\d+,(-?\\d+)");
+    private static final Pattern FRAMES_PLAN = Pattern.compile("frames: (\\d+)/(\\d+)");
     private static final String TEMP_DIR_PREFIX = "qz-headless-config-";
 
     /** 配置页在最小集上必须真的出图（本轮回归的守卫）。 */
@@ -733,6 +734,165 @@ public class HeadlessPageLinkageTest {
     private static String selectAllAt(int x) {
         return "--actions=move " + x + " 180; frame; down; frame; up; frame; keydown CONTROL_LEFT;"
                 + " frame; key A; frame; keyup CONTROL_LEFT; wait 6";
+    }
+
+    /**
+     * 命令面契约：**批量轴的产物命名**与多档独立性。
+     *
+     * <p>守的交付：{@code --out} 的后缀规则是 agent 找产物的**唯一依据**（使用指南「参数」节承诺：
+     * 矩阵出图按轴追加 {@code -pg<页面>} / {@code -p<下标>} / {@code -th<外观>} / {@code -bq<玻璃>} /
+     * {@code -fs<百分比>} / {@code -WxH}，各段只在对应轴存在多档时出现）。它此前在 {@code src/test}
+     * 零覆盖 —— 后缀改名、少加一段、或两档互相覆盖都不会红。</p>
+     *
+     * <h4>判据</h4>
+     * <ul>
+     *   <li>逐轴核对后缀段：尺寸段**恒进**（同一页面不同尺寸没有「缺省尺寸」可言）、字号段只在
+     *       **偏离缺省水位**（100 = {@code FONT_SCALE_NONE_PERCENT}）时进、页面段只在多页面时进、
+     *       下标 / 外观段在给出时进；</li>
+     *   <li>单档**不加任何后缀**（既有命令的产物路径逐字不变）；</li>
+     *   <li>各档产物摘要两两不同（档位真的改了像素，而不是同一请求出了两次）；</li>
+     *   <li>批量汇总行报 {@code batch: N/N ok (逐档独立进程)} —— F31 的「产物只依赖请求」契约。</li>
+     * </ul>
+     */
+    @Test
+    public void matrixAxesNameArtifactsAndStayDistinct() throws Exception {
+        assertArtifacts("linkage-matrix-sizes",
+                new String[] {"--page=playground", "--page-index=1", "--sizes=640x360,1280x720"},
+                new String[] {"linkage-matrix-sizes-p1-640x360.png", "linkage-matrix-sizes-p1-1280x720.png"});
+        assertArtifacts("linkage-matrix-fs",
+                new String[] {"--page=playground", "--page-index=1", "--font-scales=100,200"},
+                new String[] {"linkage-matrix-fs-p1-1280x720.png", "linkage-matrix-fs-p1-fs200-1280x720.png"});
+        assertArtifacts("linkage-matrix-theme",
+                new String[] {"--page=playground", "--page-index=1", "--themes=liquid-glass-dark,solid-dark"},
+                new String[] {"linkage-matrix-theme-p1-thliquid-glass-dark-1280x720.png",
+                        "linkage-matrix-theme-p1-thsolid-dark-1280x720.png"});
+        // 前缀刻意不取 linkage-matrix-page：sameStem 按 startsWith 匹配，会与下面的 linkage-matrix-pages
+        // 互相命中（独立审查建议 4；当前靠用例顺序侥幸无事，改名后重排/并行都不再互删）。
+        assertArtifacts("linkage-matrix-pidx",
+                new String[] {"--page=playground", "--page-indexes=0,1"},
+                new String[] {"linkage-matrix-pidx-p0-1280x720.png", "linkage-matrix-pidx-p1-1280x720.png"});
+        assertArtifacts("linkage-matrix-pages",
+                new String[] {"--pages=playground,text-probe"},
+                new String[] {"linkage-matrix-pages-pgplayground-1280x720.png",
+                        "linkage-matrix-pages-pgtext-probe-1280x720.png"});
+        // 玻璃档轴：独立审查用变异实测「把 -bq 改成 -bqX 时本用例与 F40/F43 判据全绿」⇒ 指南
+        // 「玻璃档后缀有门禁钉住」当时是空头承诺；本档把它补成真的（+2 次出图约 6 s）。
+        assertArtifacts("linkage-matrix-bq",
+                new String[] {"--page=glass", "--backdrop-qualities=full,eco"},
+                new String[] {"linkage-matrix-bq-bqfull-1280x720.png", "linkage-matrix-bq-bqeco-1280x720.png"});
+        assertArtifacts("linkage-matrix-single",
+                new String[] {"--page=playground", "--page-index=1"},
+                new String[] {"linkage-matrix-single.png"});
+    }
+
+    /**
+     * 直启一次批量出图：核对**产物文件名集合**、**逐档摘要两两不同**与批量汇总行。
+     *
+     * @param name          用例内产物名前缀
+     * @param args          命令行参数（不含 {@code --out}，由 {@link #runShot} 统一给出）
+     * @param expectedNames 期望的产物文件名集合（顺序无关）
+     */
+    private static void assertArtifacts(String name, String[] args, String[] expectedNames) throws Exception {
+        Shot shot = runShot(name, args);
+        HeadlessShotGate.assumeEnvironmentAvailable(name, shot.exit, shot.output);
+        Assert.assertEquals("headless 直启失败（" + name + " exit=" + shot.exit + "）：\n" + shot.output,
+                0, shot.exit);
+        List<Path> produced = sameStem(shot.outputPath);
+        Set<String> names = new LinkedHashSet<String>();
+        for (Path path : produced) {
+            names.add(path.getFileName().toString());
+        }
+        Set<String> expected = new LinkedHashSet<String>(java.util.Arrays.asList(expectedNames));
+        Assert.assertEquals("批量轴产物命名不符合契约（" + name + "）：\n" + shot.output, expected, names);
+        Set<String> digests = digestsOf(produced);
+        Assert.assertEquals("各档产物必须两两不同（同摘要 = 同一请求出了两次，或档位没接线）：" + digests
+                + "\n" + shot.output, expectedNames.length, digests.size());
+        if (expectedNames.length > 1) {
+            Assert.assertTrue("批量必须逐档独立进程（F31：产物只依赖请求）：\n" + shot.output,
+                    shot.output.contains("batch: " + expectedNames.length + "/" + expectedNames.length + " ok")
+                            && shot.output.contains("逐档独立进程"));
+        }
+    }
+
+    /**
+     * 命令面契约：**帧计划三参数**与 **{@code --script=file}**。
+     *
+     * <p>守的交付：</p>
+     * <ul>
+     *   <li>{@code --frames=N} 是「最少帧数」而不是「固定帧数」—— 实际帧数必须 {@code ≥ N}，
+     *       {@code --max-frames} 是读数分母；{@code maxFrames < frames} 属**参数错误**（exit 2 + 自证消息）；</li>
+     *   <li>{@code --script=file} 与 {@code --actions} 同源：同一段脚本（含注释与分号分隔）从文件读进来
+     *       必须与内联**同摘要**（比较口径是产物 sha256 前 8 字节，非逐字节全文件）；空文件等价于无脚本；
+     *       文件读不到是**参数错误**而不是设施失败。</li>
+     * </ul>
+     */
+    @Test
+    public void framePlanAndScriptFileContracts() throws Exception {
+        String framesOutput = render("linkage-frames", "--page=config", "--frames=30", "--max-frames=60");
+        int[] plan = framesPlanOf(framesOutput);
+        Assert.assertEquals("帧计划读数必须报 --max-frames 为分母：\n" + framesOutput, 60, plan[1]);
+        Assert.assertTrue("--frames=30 是最少帧数，实际帧数必须 ≥ 30：\n" + framesOutput, plan[0] >= 30);
+
+        // 「下界」而不是「恰好 N 帧」：--settle=1 时 config 页收敛在 5 与 40 之间（实测 28）——
+        // 只断言 ≥30 区分不出「固定 30 帧」的实现（独立审查建议 1），故补这一档把下界语义与
+        // --settle 参与收敛同时钉住（--settle= 此前在门禁里零使用）。
+        String settleOutput = render("linkage-frames-settle", "--page=config", "--frames=5",
+                "--settle=1", "--max-frames=40");
+        int[] settled = framesPlanOf(settleOutput);
+        Assert.assertEquals("帧计划读数必须报 --max-frames 为分母：\n" + settleOutput, 40, settled[1]);
+        Assert.assertTrue("--frames=5 是下界：实际帧数必须 > 5（固定 5 帧的实现会红）：\n" + settleOutput,
+                settled[0] > 5);
+
+        Shot badPlan = runShot("linkage-frames-bad", "--page=playground", "--frames=9", "--max-frames=5");
+        Assert.assertEquals("frames > max-frames 必须落参数错误（exit 2）：\n" + badPlan.output,
+                2, badPlan.exit);
+        Assert.assertTrue("参数错误必须自证成因：\n" + badPlan.output,
+                badPlan.output.contains("maxFrames 不得小于 frames"));
+
+        Path scriptFile = Paths.get("build", "reports", "headless", "linkage-script.qzscript").toAbsolutePath();
+        Files.createDirectories(scriptFile.getParent());
+        Files.write(scriptFile, "# 注释行\nmove 953 84; frame  # 行尾注释\nclick\nwait 8\n"
+                .getBytes(StandardCharsets.UTF_8));
+        try {
+            String fromFile = renderDigest("linkage-script-file", "--page=playground",
+                    "--script=" + scriptFile);
+            String inline = renderDigest("linkage-script-inline", "--page=playground",
+                    "--actions=move 953 84; frame; click; wait 8");
+            Assert.assertEquals("--script=file 必须与内联 --actions 同摘要（sha256 前 8 字节）："
+                    + fromFile + " vs " + inline, inline, fromFile);
+
+            Path emptyFile = Paths.get("build", "reports", "headless", "linkage-script-empty.qzscript")
+                    .toAbsolutePath();
+            Files.write(emptyFile, new byte[0]);
+            try {
+                String emptyScript = renderDigest("linkage-script-empty", "--page=playground",
+                        "--page-index=1", "--script=" + emptyFile);
+                String noScript = renderDigest("linkage-script-none", "--page=playground", "--page-index=1");
+                Assert.assertEquals("空脚本必须等价于无脚本：" + emptyScript + " vs " + noScript,
+                        noScript, emptyScript);
+            } finally {
+                Files.deleteIfExists(emptyFile);
+            }
+
+            Shot missing = runShot("linkage-script-missing", "--page=playground",
+                    "--script=" + scriptFile.resolveSibling("no-such-script.qzscript"));
+            Assert.assertEquals("脚本文件不存在必须落参数错误（exit 2）：\n" + missing.output,
+                    2, missing.exit);
+            Assert.assertTrue("参数错误必须自证成因与路径：\n" + missing.output,
+                    missing.output.contains("脚本文件读取失败")
+                            && missing.output.contains("no-such-script"));
+        } finally {
+            Files.deleteIfExists(scriptFile);
+        }
+    }
+
+    /** 从输出里取帧计划读数 {@code frames: N/M}；没有该行返回 {@code {-1, -1}}。 */
+    private static int[] framesPlanOf(String output) {
+        Matcher matcher = FRAMES_PLAN.matcher(output);
+        if (!matcher.find()) {
+            return new int[] {-1, -1};
+        }
+        return new int[] {Integer.parseInt(matcher.group(1)), Integer.parseInt(matcher.group(2))};
     }
 
     /**
