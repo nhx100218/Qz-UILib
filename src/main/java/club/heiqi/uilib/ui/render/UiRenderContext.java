@@ -689,15 +689,19 @@ public class UiRenderContext implements UiRenderBackend {
         }
 
         GL11.glPushMatrix();
-        GL11.glTranslatef((float) x, (float) y, 0.0F);
-        GL11.glScalef(UI_TEXT_SCALE, UI_TEXT_SCALE, 1.0F);
-        if (fontRenderer instanceof DefaultFontRendererAdapter) {
-            ((DefaultFontRendererAdapter) fontRenderer).drawBaselineAlignedString(text, 0, 0, color, shadow,
-                    textContentMode, resolvedFontWeight, resolvedFontStyle);
-        } else {
-            fontRenderer.drawBaselineAlignedString(text, 0, 0, color, shadow);
+        try {
+            GL11.glTranslatef((float) x, (float) y, 0.0F);
+            GL11.glScalef(UI_TEXT_SCALE, UI_TEXT_SCALE, 1.0F);
+            if (fontRenderer instanceof DefaultFontRendererAdapter) {
+                ((DefaultFontRendererAdapter) fontRenderer).drawBaselineAlignedString(text, 0, 0, color, shadow,
+                        textContentMode, resolvedFontWeight, resolvedFontStyle);
+            } else {
+                fontRenderer.drawBaselineAlignedString(text, 0, 0, color, shadow);
+            }
+        } finally {
+            // 委托给第三方字体实现，异常时矩阵栈必须照弹：否则后续 UI 整体平移/缩放错位（N5）。
+            GL11.glPopMatrix();
         }
-        GL11.glPopMatrix();
         notifyMainLayerContentChanged();
     }
 
@@ -723,10 +727,13 @@ public class UiRenderContext implements UiRenderBackend {
 
         float renderScale = safeStyle.getFontSizePx() / (float) Math.max(1, fontRenderer.getLineHeight());
         GL11.glPushMatrix();
-        GL11.glTranslatef((float) x, (float) y, 0.0F);
-        GL11.glScalef(renderScale, renderScale, 1.0F);
-        fontRenderer.drawBaselineAlignedString(text, 0, 0, color, shadow);
-        GL11.glPopMatrix();
+        try {
+            GL11.glTranslatef((float) x, (float) y, 0.0F);
+            GL11.glScalef(renderScale, renderScale, 1.0F);
+            fontRenderer.drawBaselineAlignedString(text, 0, 0, color, shadow);
+        } finally {
+            GL11.glPopMatrix();
+        }
         notifyMainLayerContentChanged();
     }
 

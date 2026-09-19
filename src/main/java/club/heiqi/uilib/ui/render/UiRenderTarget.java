@@ -129,6 +129,8 @@ public class UiRenderTarget {
      * @param guiHeight GUI 逻辑高度
      */
     public void drawToScreen(int guiWidth, int guiHeight) {
+        // 读回真实原值：不依赖 attrib 栈回滚纹理绑定（attrib 栈在 Core Profile 下可能不可用，见 GL 自净审查 N2）。
+        int previousTextureBinding = GL11.glGetInteger(GL11.GL_TEXTURE_BINDING_2D);
         GL11.glPushAttrib(GL11.GL_ALL_ATTRIB_BITS);
         try {
             GL11.glEnable(GL11.GL_TEXTURE_2D);
@@ -153,8 +155,9 @@ public class UiRenderTarget {
             GL11.glVertex2f(0.0F, 0.0F);
             GL11.glEnd();
 
-            GL11.glBindTexture(GL11.GL_TEXTURE_2D, 0);
         } finally {
+            // 回绑必须在 finally 内：异常路径同样要还原入口绑定，否则「不依赖 attrib 栈」的目标在异常下失效。
+            GL11.glBindTexture(GL11.GL_TEXTURE_2D, previousTextureBinding);
             GL11.glPopAttrib();
         }
     }
@@ -167,6 +170,8 @@ public class UiRenderTarget {
      * 避免物品层覆盖主 UI 层已经建立好的最终 coverage。</p>
      */
     public void compositeToCurrentFramebuffer() {
+        // 读回真实原值：不依赖 attrib 栈回滚纹理绑定（attrib 栈在 Core Profile 下可能不可用，见 GL 自净审查 N2）。
+        int previousTextureBinding = GL11.glGetInteger(GL11.GL_TEXTURE_BINDING_2D);
         GL11.glPushAttrib(GL11.GL_ALL_ATTRIB_BITS);
         try {
             GL11.glEnable(GL11.GL_TEXTURE_2D);
@@ -190,8 +195,9 @@ public class UiRenderTarget {
             GL11.glVertex2f(0.0F, 0.0F);
             GL11.glEnd();
 
-            GL11.glBindTexture(GL11.GL_TEXTURE_2D, 0);
         } finally {
+            // 回绑必须在 finally 内：异常路径同样要还原入口绑定，否则「不依赖 attrib 栈」的目标在异常下失效。
+            GL11.glBindTexture(GL11.GL_TEXTURE_2D, previousTextureBinding);
             GL11.glPopAttrib();
         }
     }
@@ -218,6 +224,8 @@ public class UiRenderTarget {
             return;
         }
 
+        // 读回真实原值：不依赖 attrib 栈回滚纹理绑定（attrib 栈在 Core Profile 下可能不可用，见 GL 自净审查 N2）。
+        int previousTextureBinding = GL11.glGetInteger(GL11.GL_TEXTURE_BINDING_2D);
         GL11.glPushAttrib(GL11.GL_ALL_ATTRIB_BITS);
         try {
             GL11.glEnable(GL11.GL_TEXTURE_2D);
@@ -246,10 +254,11 @@ public class UiRenderTarget {
             GL11.glVertex2f(clippedLeft, clippedTop);
             GL11.glEnd();
 
-            GL11.glBindTexture(GL11.GL_TEXTURE_2D, 0);
-            GL11.glColor4f(1.0F, 1.0F, 1.0F, 1.0F);
         } finally {
+            // 回绑必须在 finally 内：异常路径同样要还原入口绑定，否则「不依赖 attrib 栈」的目标在异常下失效。
+            GL11.glBindTexture(GL11.GL_TEXTURE_2D, previousTextureBinding);
             GL11.glPopAttrib();
+            GL11.glColor4f(1.0F, 1.0F, 1.0F, 1.0F);
         }
     }
 

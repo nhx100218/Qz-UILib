@@ -14,6 +14,8 @@ import org.junit.Assert;
 import org.junit.Test;
 import org.lwjgl.opengl.GL11;
 import org.lwjgl.opengl.GL13;
+import org.lwjgl.opengl.GL20;
+import org.lwjgl.opengl.GL30;
 
 /**
  * Minecraft item icon 当帧直绘测试：VANILLA 语义断言终态序列与原版一致（保留全部残留）、
@@ -317,6 +319,54 @@ public class MinecraftItemIconRendererTest {
         }
     }
 
+    /**
+     * ISOLATED 语义下 program 与 VAO 绑定必须恢复。
+     *
+     * <p>依据来自真实 GL 实测（GL 自净审查 §六）：attrib 栈**不覆盖** program 与 VAO 绑定
+     * （{@code GL_VERTEX_ARRAY_BINDING} 在 push 内改为 1 后 pop 仍是 1），故 scope 必须自行保存恢复。</p>
+     */
+    @Test
+    public void isolatedScopeRestoresProgramAndVertexArrayBindings() {
+        List<String> events = new ArrayList<String>();
+        RecordingGlAccess glAccess = RecordingGlAccess.defaultState(events);
+        glAccess.modernBindingsSupported = true;
+        glAccess.programBinding = 7;
+        glAccess.vertexArrayBinding = 3;
+
+        new GlStateScope(glAccess).run(() -> {
+            glAccess.programBinding = 9;
+            glAccess.vertexArrayBinding = 5;
+        });
+
+        Assert.assertEquals("program 绑定必须恢复入口值", 7, glAccess.programBinding);
+        Assert.assertEquals("VAO 绑定必须恢复入口值", 3, glAccess.vertexArrayBinding);
+    }
+
+    /**
+     * 恢复失败时主导异常是恢复失败，且任务异常以 suppressed 保留（不再被 finally 语义吞掉）。
+     */
+    @Test
+    public void scopeKeepsTaskFailureAsSuppressedWhenRestoreFails() {
+        List<String> events = new ArrayList<String>();
+        RecordingGlAccess glAccess = RecordingGlAccess.defaultState(events);
+        glAccess.failMatrixModeRestore = true;
+        IllegalStateException taskFailure = new IllegalStateException("任务失败");
+
+        IllegalStateException restoreFailure = null;
+        try {
+            new GlStateScope(glAccess).run(() -> {
+                throw taskFailure;
+            });
+            Assert.fail("恢复失败必须抛出");
+        } catch (IllegalStateException thrown) {
+            restoreFailure = thrown;
+        }
+
+        Assert.assertNotSame("恢复失败必须是主导异常", taskFailure, restoreFailure);
+        Assert.assertEquals("任务异常必须作为 suppressed 保留", 1, restoreFailure.getSuppressed().length);
+        Assert.assertSame(taskFailure, restoreFailure.getSuppressed()[0]);
+    }
+
     @Test
     public void constructorRejectsNullGlStateScope() {
         try {
@@ -402,6 +452,12 @@ public class MinecraftItemIconRendererTest {
         private int activeTexture;
         private int clientActiveTexture;
         private int matrixMode;
+        /** 是否模拟 GL2.0/3.0 的 program / VAO 能力（默认关闭：既有用例的事件序列不含这两项恢复）。 */
+        private boolean modernBindingsSupported;
+        private int programBinding;
+        private int vertexArrayBinding;
+        /** 模拟恢复阶段失败（matrixMode 只在退出恢复路径被调用），用于验证任务异常被保留。 */
+        private boolean failMatrixModeRestore;
 
         private RecordingGlAccess(List<String> events, int activeTexture, int clientActiveTexture,
                 int matrixMode, int textureBindingOnTexture0, int textureBindingOnActiveTexture) {
@@ -441,6 +497,13 @@ public class MinecraftItemIconRendererTest {
 
         @Override
         public int getInteger(int name) {
+            // 能力缺失时按真实调用语义直接抛出（不留事件痕迹），否则既有用例的事件序列会被降级路径污染。
+            if (name == GL20.GL_CURRENT_PROGRAM && !modernBindingsSupported) {
+                throw new IllegalStateException("后端无 GL2.0 program 能力");
+            }
+            if (name == GL30.GL_VERTEX_ARRAY_BINDING && !modernBindingsSupported) {
+                throw new IllegalStateException("后端无 GL3.0 VAO 能力");
+            }
             events.add("getInteger(" + glName(name) + ")");
             if (name == GL11.GL_MATRIX_MODE) {
                 return matrixMode;
@@ -454,6 +517,12 @@ public class MinecraftItemIconRendererTest {
             if (name == GL11.GL_TEXTURE_BINDING_2D) {
                 Integer binding = textureBindings.get(activeTexture);
                 return binding == null ? 0 : binding.intValue();
+            }
+            if (name == GL20.GL_CURRENT_PROGRAM) {
+                return programBinding;
+            }
+            if (name == GL30.GL_VERTEX_ARRAY_BINDING) {
+                return vertexArrayBinding;
             }
             return 0;
         }
@@ -477,7 +546,22 @@ public class MinecraftItemIconRendererTest {
         }
 
         @Override
+        public void useProgram(int program) {
+            programBinding = program;
+            events.add("useProgram(" + program + ")");
+        }
+
+        @Override
+        public void bindVertexArray(int vertexArray) {
+            vertexArrayBinding = vertexArray;
+            events.add("bindVertexArray(" + vertexArray + ")");
+        }
+
+        @Override
         public void matrixMode(int mode) {
+            if (failMatrixModeRestore) {
+                throw new IllegalStateException("matrixMode 恢复失败");
+            }
             matrixMode = mode;
             events.add("matrixMode(" + glName(mode) + ")");
         }

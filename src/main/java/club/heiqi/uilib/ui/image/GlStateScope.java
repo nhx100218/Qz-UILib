@@ -2,18 +2,23 @@ package club.heiqi.uilib.ui.image;
 
 import java.util.Objects;
 
+import org.lwjgl.opengl.ContextCapabilities;
 import org.lwjgl.opengl.GL11;
 import org.lwjgl.opengl.GL13;
+import org.lwjgl.opengl.GL20;
+import org.lwjgl.opengl.GL30;
+import org.lwjgl.opengl.GLContext;
 
 /**
  * 物品图标渲染的通用 GL 状态 scope：入口态快照与 {@code finally} 恢复。
  *
- * <p>LWJGL2 固定管线下 {@code glPushAttrib(GL_ALL_ATTRIB_BITS)} 覆盖服务器端属性组
- * （enable 状态、当前颜色、blend/alpha 函数、cull、shade model、光照参数、viewport 等），
- * 但不含纹理绑定、active texture、client-active texture 与矩阵栈内容。本 scope 参照
- * {@code FontRenderStateGuard} 的做法，手动快照并恢复：unit0 与入口 active unit 的
- * TEXTURE_2D 绑定、active texture、client-active texture 与矩阵模式；client 属性组
- * （顶点数组、array/element buffer 绑定、pixel store）经 {@code glPushClientAttrib} 覆盖。</p>
+ * <p>真实 GL 实测（见 {@code docs/历史报告/审查/2026-09-19-GL使用自净审查.md} §六）：
+ * {@code glPushAttrib(GL_ALL_ATTRIB_BITS)} 会恢复每单元的 TEXTURE_2D 绑定与 active texture，
+ * 但**不恢复** program 绑定、VAO 绑定与矩阵栈内容。故本 scope 手动快照并恢复：
+ * unit0 与入口 active unit 的 TEXTURE_2D 绑定、active texture、client-active texture、
+ * program 与 VAO 绑定、矩阵模式；client 属性组（顶点数组、array/element buffer 绑定、
+ * pixel store）经 {@code glPushClientAttrib} 覆盖。手动恢复 attrib 栈本已覆盖的项属保守冗余，
+ * 目的是不依赖 attrib 栈在 core profile 下的可用性。</p>
  *
  * <p>矩阵栈内容不在此 scope 内保存：绘制核心自身配对 push/pop matrix，异常路径由其
  * {@code finally} 恢复；本 scope 只负责把矩阵模式恢复到入口值。scope 不支持嵌套进入。</p>
@@ -39,6 +44,10 @@ public final class GlStateScope {
 
         void clientActiveTexture(int unit);
 
+        void useProgram(int program);
+
+        void bindVertexArray(int vertexArray);
+
         void matrixMode(int mode);
     }
 
@@ -50,6 +59,9 @@ public final class GlStateScope {
         private int clientActiveTexture;
         private int textureBinding2DOnTexture0;
         private int textureBinding2DOnActiveTexture;
+        /** program / VAO 绑定：attrib 栈不覆盖它们（真实 GL 实测，见 GL 自净审查 N21）；不可用时保留 -1。 */
+        private int programBinding = -1;
+        private int vertexArrayBinding = -1;
     }
 
     private final GlAccess gl;
@@ -73,17 +85,41 @@ public final class GlStateScope {
     /**
      * 在保护的 GL 状态边界中执行任务。
      *
-     * <p>入口态在进入时快照，任务正常完成或抛出异常时都在 {@code finally} 恢复。</p>
+     * <p>入口态在进入时快照，任务正常完成或抛出异常时都恢复；恢复失败作为主导异常抛出，
+     * 任务异常以 suppressed 保留（不因 finally 语义被替换）。</p>
      *
      * @param task 要执行的任务
      */
     public void run(Runnable task) {
         Objects.requireNonNull(task, "task");
         enter();
+        Throwable taskFailure = null;
         try {
             task.run();
-        } finally {
+        } catch (RuntimeException exception) {
+            taskFailure = exception;
+        } catch (LinkageError error) {
+            taskFailure = error;
+        } catch (Error error) {
+            taskFailure = error;
+        }
+        Throwable exitFailure = null;
+        try {
             exit();
+        } catch (RuntimeException exception) {
+            exitFailure = exception;
+        } catch (LinkageError error) {
+            exitFailure = error;
+        }
+        // 恢复失败作为主导异常，任务异常作为 suppressed 保留——原先 try/finally 会直接吞掉任务异常（N22）。
+        if (exitFailure != null) {
+            if (taskFailure != null) {
+                exitFailure.addSuppressed(taskFailure);
+            }
+            rethrow(exitFailure);
+        }
+        if (taskFailure != null) {
+            rethrow(taskFailure);
         }
     }
 
@@ -102,11 +138,28 @@ public final class GlStateScope {
             saved.matrixMode = gl.getInteger(GL11.GL_MATRIX_MODE);
             saved.activeTexture = gl.getInteger(GL13.GL_ACTIVE_TEXTURE);
             saved.clientActiveTexture = -1;
+            // 前置复位：能力缺失时保留 -1，且不让上一次 run 的成功捕获串到本次（复审意见）。
+            saved.programBinding = -1;
+            saved.vertexArrayBinding = -1;
             try {
                 saved.clientActiveTexture = gl.getInteger(GL13.GL_CLIENT_ACTIVE_TEXTURE);
             } catch (RuntimeException ignored) {
                 // core profile 后端可能不支持 GL_CLIENT_ACTIVE_TEXTURE 查询：
                 // 保留 -1，exit 时跳过恢复。
+            } catch (LinkageError ignored) {
+                // 同上。
+            }
+            try {
+                saved.programBinding = gl.getInteger(GL20.GL_CURRENT_PROGRAM);
+            } catch (RuntimeException ignored) {
+                // 后端无 GL2.0 program 能力：保留 -1，exit 时跳过恢复。
+            } catch (LinkageError ignored) {
+                // 同上。
+            }
+            try {
+                saved.vertexArrayBinding = gl.getInteger(GL30.GL_VERTEX_ARRAY_BINDING);
+            } catch (RuntimeException ignored) {
+                // 后端无 GL3.0 VAO 能力：保留 -1，exit 时跳过恢复。
             } catch (LinkageError ignored) {
                 // 同上。
             }
@@ -213,6 +266,22 @@ public final class GlStateScope {
                 }
             });
         }
+        if (saved.programBinding >= 0) {
+            failure = recordFailure(failure, new Runnable() {
+                @Override
+                public void run() {
+                    gl.useProgram(saved.programBinding);
+                }
+            });
+        }
+        if (saved.vertexArrayBinding >= 0) {
+            failure = recordFailure(failure, new Runnable() {
+                @Override
+                public void run() {
+                    gl.bindVertexArray(saved.vertexArrayBinding);
+                }
+            });
+        }
         failure = recordFailure(failure, new Runnable() {
             @Override
             public void run() {
@@ -253,8 +322,8 @@ public final class GlStateScope {
         if (failure instanceof RuntimeException) {
             throw (RuntimeException) failure;
         }
-        if (failure instanceof LinkageError) {
-            throw (LinkageError) failure;
+        if (failure instanceof Error) {
+            throw (Error) failure;
         }
         throw new RuntimeException(failure);
     }
@@ -284,7 +353,20 @@ public final class GlStateScope {
 
         @Override
         public int getInteger(int name) {
+            // 能力感知：GL2.0/3.0 缺席时不发查询。core profile 下这类 pname 可能只置 GL 错误码并返回陈旧值，
+            // 上层会误判「捕获成功」，退出时反而调用不可用的绑定 API，把成功渲染变成失败（复审意见）。
+            if (name == GL20.GL_CURRENT_PROGRAM && !capabilities().OpenGL20) {
+                throw new IllegalStateException("后端不支持 GL2.0 program 查询");
+            }
+            if (name == GL30.GL_VERTEX_ARRAY_BINDING && !capabilities().OpenGL30) {
+                throw new IllegalStateException("后端不支持 GL3.0 VAO 查询");
+            }
             return GL11.glGetInteger(name);
+        }
+
+        /** 读取当前线程绑定 context 的能力。 */
+        private static ContextCapabilities capabilities() {
+            return GLContext.getCapabilities();
         }
 
         @Override
@@ -300,6 +382,16 @@ public final class GlStateScope {
         @Override
         public void clientActiveTexture(int unit) {
             GL13.glClientActiveTexture(unit);
+        }
+
+        @Override
+        public void useProgram(int program) {
+            GL20.glUseProgram(program);
+        }
+
+        @Override
+        public void bindVertexArray(int vertexArray) {
+            GL30.glBindVertexArray(vertexArray);
         }
 
         @Override

@@ -397,18 +397,21 @@ final class ClipStack {
         ops.depthMask(false);
         GL11.glDisable(GL11.GL_TEXTURE_2D);
 
-        for (int index = 0; index < roundedClipRegions.size(); index++) {
-            ops.stencilFunc(GL11.GL_EQUAL, index, 0xFF);
-            ops.stencilOp(GL11.GL_KEEP, GL11.GL_KEEP, GL11.GL_INCR);
-            RoundedClipRegion clipRegion = roundedClipRegions.get(index);
-            UiRoundedRectGeometry.drawRoundedRectGeometry(clipRegion.getLeft(), clipRegion.getTop(),
-                    clipRegion.getRight(), clipRegion.getBottom(), clipRegion.getCornerRadii(), true,
-                    UiSurfaceStyle.CORNER_ALL);
+        try {
+            for (int index = 0; index < roundedClipRegions.size(); index++) {
+                ops.stencilFunc(GL11.GL_EQUAL, index, 0xFF);
+                ops.stencilOp(GL11.GL_KEEP, GL11.GL_KEEP, GL11.GL_INCR);
+                RoundedClipRegion clipRegion = roundedClipRegions.get(index);
+                UiRoundedRectGeometry.drawRoundedRectGeometry(clipRegion.getLeft(), clipRegion.getTop(),
+                        clipRegion.getRight(), clipRegion.getBottom(), clipRegion.getCornerRadii(), true,
+                        UiSurfaceStyle.CORNER_ALL);
+            }
+        } finally {
+            // 写掩码必须在任何抛出路径上复原：colorMask 全关若被悬挂，本帧后续绘制会静默不写颜色（N3）。
+            GL11.glEnable(GL11.GL_TEXTURE_2D);
+            ops.colorMask(true, true, true, true);
+            ops.depthMask(true);
         }
-
-        GL11.glEnable(GL11.GL_TEXTURE_2D);
-        ops.colorMask(true, true, true, true);
-        ops.depthMask(true);
         ops.stencilMask(0x00);
         ops.stencilFunc(GL11.GL_EQUAL, roundedClipRegions.size(), 0xFF);
         ops.stencilOp(GL11.GL_KEEP, GL11.GL_KEEP, GL11.GL_KEEP);

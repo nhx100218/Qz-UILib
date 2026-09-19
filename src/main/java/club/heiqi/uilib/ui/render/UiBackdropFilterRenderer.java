@@ -189,13 +189,25 @@ final class UiBackdropFilterRenderer {
 
         // Shader 用连续覆盖率裁出圆角；自身 stencil 会把半透明弧边再次硬切掉。
         // 矩形约束仍与祖先 scissor/stencil 求交，固定管线回退另加圆角裁剪。
-        context.pushClip(left, top, right, bottom, 0);
-        GL11.glPushAttrib(GL11.GL_ALL_ATTRIB_BITS);
-        int previousProgram = GL11.glGetInteger(GL20.GL_CURRENT_PROGRAM);
-        int previousActiveTexture = GL11.glGetInteger(GL13.GL_ACTIVE_TEXTURE);
+        // 保护域（clip 栈 + attrib 帧）必须建立在 try 之前一行的位置上：原先 pushClip/pushAttrib 落在 try 外面，
+        // 两次 glGetInteger 抛异常时两处栈各多一层且 finally 回滚不到（GL 自净审查 N7）。
+        int previousProgram = 0;
+        int previousActiveTexture = GL13.GL_TEXTURE0;
+        int previousTextureBinding = 0;
+        boolean clipPushed = false;
+        boolean attribPushed = false;
+        boolean stateCaptured = false;
         boolean drewBackdrop = false;
         boolean fixedPipelineClip = false;
         try {
+            context.pushClip(left, top, right, bottom, 0);
+            clipPushed = true;
+            GL11.glPushAttrib(GL11.GL_ALL_ATTRIB_BITS);
+            attribPushed = true;
+            previousProgram = GL11.glGetInteger(GL20.GL_CURRENT_PROGRAM);
+            previousActiveTexture = GL11.glGetInteger(GL13.GL_ACTIVE_TEXTURE);
+            previousTextureBinding = GL11.glGetInteger(GL11.GL_TEXTURE_BINDING_2D);
+            stateCaptured = true;
             GL13.glActiveTexture(GL13.GL_TEXTURE0);
             GL11.glBindTexture(GL11.GL_TEXTURE_2D, snapshot.getTextureId());
             GL11.glEnable(GL11.GL_TEXTURE_2D);
@@ -254,11 +266,13 @@ final class UiBackdropFilterRenderer {
             return null;
         } finally {
             if (fixedPipelineClip) context.popClip();
-            GL20.glUseProgram(previousProgram);
-            GL13.glActiveTexture(previousActiveTexture);
-            GL11.glBindTexture(GL11.GL_TEXTURE_2D, 0);
-            GL11.glPopAttrib();
-            context.popClip();
+            if (stateCaptured) {
+                GL20.glUseProgram(previousProgram);
+                GL13.glActiveTexture(previousActiveTexture);
+                GL11.glBindTexture(GL11.GL_TEXTURE_2D, previousTextureBinding);
+            }
+            if (attribPushed) GL11.glPopAttrib();
+            if (clipPushed) context.popClip();
             snapshotService.releaseSnapshot(snapshot);
             if (drewBackdrop) {
                 context.notifyMainLayerContentChanged();

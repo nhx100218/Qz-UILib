@@ -41,9 +41,13 @@ public class FontShaderProgram {
                 missingUniforms.clear();
                 loadProgram();
             } catch (RuntimeException exception) {
-                close();
-                initialized.set(false);
+                resetAfterFailedInitialize();
                 throw exception;
+            } catch (Error error) {
+                // Error（LinkageError/OOM 等）此前不回收：initialized 会停在 true，而 loadProgram 的 finally
+                // 已把 programId 归零，后续 bind() 静默退回固定管线且永不重建（GL 自净审查 N16）。
+                resetAfterFailedInitialize();
+                throw error;
             }
         }
     }
@@ -59,6 +63,19 @@ public class FontShaderProgram {
         close();
         initialized.set(false);
         initialize();
+    }
+
+    /**
+     * 初始化失败后的复位：{@code close()} 自身第一步就是 GL 调用（unbind），在「GL20 入口不可用」这类
+     * Error 下会再次抛出，故 {@code initialized} 的归位必须放在 finally——否则既停在 true，又把原始
+     * Error 顶掉（独立复核实测该路径，见 GL 自净审查 N16 复审）。
+     */
+    private void resetAfterFailedInitialize() {
+        try {
+            close();
+        } finally {
+            initialized.set(false);
+        }
     }
 
     /**
