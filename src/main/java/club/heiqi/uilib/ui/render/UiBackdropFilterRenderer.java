@@ -332,6 +332,11 @@ final class UiBackdropFilterRenderer {
                 });
             }
             if (restoreFailure != null) {
+                // 已知窗口（独立复核登记，未在本批闭合）：try 体正在抛异常时，此处的 finally 抛出会
+                // 替换在飞异常（未挂 suppressed）。彻底闭合需要消除 try 体内的多处 return、改成
+                // 「记录返回值 → finally 只恢复 → 统一抛出」的样板结构，改动面大于本批范围，
+                // 故先在此声明契约与触发条件：仅在「恢复步骤抛异常」且「try 体也在抛」时丢失原始异常，
+                // 恢复动作本身不受影响（restoreStep 逐步累积）。
                 throwUnchecked(restoreFailure);
             }
         }
@@ -339,24 +344,53 @@ final class UiBackdropFilterRenderer {
 
     }
 
-    /** 执行一步恢复并累积失败（不中断后续步骤）。 */
+    /**
+     * 执行一步恢复并累积失败（不中断后续步骤）。
+     *
+     * <p>捕获面为全部 unchecked 失败（含 VM 级 {@link Error}）：恢复链中途抛出时若直接向上传播，
+     * 后面的恢复步骤全部被跳过，状态漂移会跨帧累积——这正是本仓自净审查要求消除的失败模式。
+     * 致命性由 {@link #appendFailure} 保留：Error 升级为主异常而不是降级成 suppressed。</p>
+     */
     private static Throwable restoreStep(Throwable failure, Runnable step) {
         try {
             step.run();
         } catch (RuntimeException exception) {
             return appendFailure(failure, exception);
-        } catch (LinkageError error) {
+        } catch (Error error) {
             return appendFailure(failure, error);
         }
         return failure;
     }
 
+    /**
+     * 合并失败：第一个失败为主异常，后续失败挂 suppressed。
+     *
+     * <p>两处防御：同一实例不得自挂 suppressed（{@code addSuppressed(self)} 会抛
+     * {@code IllegalArgumentException}，把恢复失败替换成参数异常）；致命 {@link Error}
+     * 不得被降级——升级为主异常、原主异常转 suppressed。口径与
+     * {@code UiRenderTarget}/{@code UiHostRenderSupport}/{@code MinecraftHostImageRenderer} 一致。</p>
+     */
     private static Throwable appendFailure(Throwable primary, Throwable additional) {
         if (primary == null) {
             return additional;
         }
+        if (additional == null) {
+            return primary;
+        }
+        if (primary == additional) {
+            return primary;
+        }
+        if (isFatal(additional) && !isFatal(primary)) {
+            additional.addSuppressed(primary);
+            return additional;
+        }
         primary.addSuppressed(additional);
         return primary;
+    }
+
+    /** {@link LinkageError} 属可恢复的类加载失败，其余 Error 视为致命。 */
+    private static boolean isFatal(Throwable failure) {
+        return failure instanceof Error && !(failure instanceof LinkageError);
     }
 
     private static void throwUnchecked(Throwable failure) {

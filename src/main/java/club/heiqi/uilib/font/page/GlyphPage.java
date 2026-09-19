@@ -263,7 +263,8 @@ public class GlyphPage {
                 batchClientAttribPushed = false;
                 if (restoreFailure != null) {
                     if (failure != null) {
-                        failure.addSuppressed(restoreFailure);
+                        // 统一走 appendFailure：致命 Error 升级为主异常，且同一实例不自挂 suppressed。
+                        failure = appendFailure(failure, restoreFailure);
                     } else {
                         throwUnchecked(restoreFailure);
                     }
@@ -383,17 +384,22 @@ public class GlyphPage {
         }
     }
 
+    /**
+     * 批内清理失败不回抛：调用方正在抛 upload 失败，本方法只把清理失败作为附加信息挂到该异常上
+     * （调用方随后 {@code throw} 的是同一实例，suppressed 会被保留）。此处**刻意不做致命升级**——
+     * 升级会替换掉调用方正在抛的 upload 失败，把主因改写成次生清理失败。
+     */
     private boolean clearUploadedRegionInBatch(GlyphSlot slot, Throwable originalFailure) {
         try {
             clearUploadedRegionPixelsInBatch(slot);
             return true;
         } catch (RuntimeException cleanupFailure) {
-            originalFailure.addSuppressed(cleanupFailure);
             allocationClosed = true;
+            originalFailure.addSuppressed(cleanupFailure);
             return false;
         } catch (Error cleanupFailure) {
-            originalFailure.addSuppressed(cleanupFailure);
             allocationClosed = true;
+            originalFailure.addSuppressed(cleanupFailure);
             return false;
         }
     }
@@ -497,7 +503,7 @@ public class GlyphPage {
                     }
                 }
                 if (failure != null) {
-                    failure.addSuppressed(restoreFailure);
+                    failure = appendFailure(failure, restoreFailure);
                 } else {
                     throwUnchecked(restoreFailure);
                 }
@@ -569,11 +575,55 @@ public class GlyphPage {
     /**
      * 获取或创建字符页纹理。
      *
+     * <p><b>库内零调用</b>：批上传（{@code beginBatchUpload()}）与逐 glyph 上传（{@code uploadPixels}）
+     * 都已在各自的帧内创建并绑定纹理，不经过本方法；本仓无调用点（grep 零命中），
+     * 保留公开入口是为兼容库外的既有调用方；
+     * 而 {@code ensureTexture()} 末尾硬编码解绑 {@code bindTexture(GL_TEXTURE_2D, 0)}，并在
+     * {@code prepareUnpackState()} 里改写 {@code GL_UNPACK_*}，在没有帧保护时会分别漂移宿主的
+     * 纹理绑定与 client pixel-store 状态（GL 自净审查 N17/R22）。因此本方法自带
+     * {@link #UPLOAD_ATTRIB_MASK} 帧与 {@code GL_CLIENT_PIXEL_STORE_BIT} 帧，让两类写入都被恢复。</p>
+     *
      * @return 字符页纹理 ID
      */
     public int getOrCreateTextureId() {
-        ensureTexture();
-        return textureId;
+        drainEntryGlError("texture_init_entry");
+        gl.pushAttrib(UPLOAD_ATTRIB_MASK);
+        // 沿用本类既有契约（见 GlyphPageVariableSlotPackingTest#failedAttribPushDoesNotPopUnpushedHostStack）：
+        // 闸门失败即视为 push 未生效，不 pop，避免弹掉宿主的帧；代价是「push 成功却报错」时会漏一帧（R11 未决项）。
+        requireNoGlError("texture_init_attrib_push");
+        gl.pushClientAttrib(GL11.GL_CLIENT_PIXEL_STORE_BIT);
+        requireNoGlError("texture_init_client_attrib_push");
+        Throwable failure = null;
+        int createdTextureId = 0;
+        try {
+            ensureTexture();
+            createdTextureId = textureId;
+        } catch (RuntimeException ensureFailure) {
+            failure = ensureFailure;
+        } catch (Error ensureFailure) {
+            failure = ensureFailure;
+        }
+        // 恢复顺序与压栈相反（client attrib 先弹）
+        try {
+            gl.popClientAttrib();
+            requireNoGlError("texture_init_client_attrib_pop");
+        } catch (RuntimeException restoreFailure) {
+            failure = appendFailure(failure, restoreFailure);
+        } catch (Error restoreFailure) {
+            failure = appendFailure(failure, restoreFailure);
+        }
+        try {
+            gl.popAttrib();
+            requireNoGlError("texture_init_attrib_pop");
+        } catch (RuntimeException restoreFailure) {
+            failure = appendFailure(failure, restoreFailure);
+        } catch (Error restoreFailure) {
+            failure = appendFailure(failure, restoreFailure);
+        }
+        if (failure != null) {
+            throwUnchecked(failure);
+        }
+        return createdTextureId;
     }
 
     private void ensureTexture() {
@@ -612,6 +662,13 @@ public class GlyphPage {
             if (!textureValid) {
                 throw new GlyphUploadException("texture_validation", 0, "GL 未确认新 atlas texture 有效");
             }
+            // 解绑候选纹理用 0 而非读回「进入时的绑定」：本方法的所有库内调用点都持有
+            // UPLOAD_ATTRIB_MASK (=GL_TEXTURE_BIT) 帧与 GL_CLIENT_PIXEL_STORE_BIT 帧
+            // （prepareUnpackState 会改写 GL_UNPACK_*），帧内含各 texture unit 的 TEXTURE_2D 绑定与
+            // client unpack state，两类写入都会在 popAttrib/popClientAttrib 时被恢复
+            // （真实 GL 实测已确认 attrib 帧恢复 per-unit 绑定）。
+            // 读回真值需要给 GlApi 增加查询面；公开入口 getOrCreateTextureId 已自带两个帧，见其 javadoc。
+            // 契约：任何新的调用点必须在两个帧内调用本方法（GL 自净审查 N17/R22）。
             gl.bindTexture(GL11.GL_TEXTURE_2D, 0);
             requireNoGlError("texture_unbind");
             textureId = candidateTexture;
@@ -896,6 +953,7 @@ public class GlyphPage {
         uncommittedTextureId = 0;
     }
 
+    /** 回滚失败只作为附加信息挂到调用方正在抛的异常上（理由见 {@link #clearUploadedRegionInBatch}）。 */
     private void rollbackUncommittedTexture(Throwable originalFailure) {
         if (uncommittedTextureId == 0) {
             return;
@@ -1013,12 +1071,32 @@ public class GlyphPage {
         }
     }
 
+    /**
+     * 合并失败：首个失败为主异常；同一实例不得自挂 suppressed（addSuppressed(self) 会抛参数异常）；
+     * 致命 {@link Error} 升级为主异常而不是被降级成 suppressed（与仓内
+     * {@code UiRenderTarget}/{@code UiHostRenderSupport}/{@code MinecraftHostImageRenderer} 口径一致）。
+     */
     private static Throwable appendFailure(Throwable primary, Throwable additional) {
         if (primary == null) {
             return additional;
         }
+        if (additional == null) {
+            return primary;
+        }
+        if (primary == additional) {
+            return primary;
+        }
+        if (isFatal(additional) && !isFatal(primary)) {
+            additional.addSuppressed(primary);
+            return additional;
+        }
         primary.addSuppressed(additional);
         return primary;
+    }
+
+    /** {@link LinkageError} 属可恢复的类加载失败，其余 Error 视为致命。 */
+    private static boolean isFatal(Throwable failure) {
+        return failure instanceof Error && !(failure instanceof LinkageError);
     }
 
     private static int requiredRgbaBytes(int width, int height) {

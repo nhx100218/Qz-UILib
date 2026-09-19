@@ -1330,13 +1330,49 @@ public class UiRenderContext implements UiRenderBackend {
         // clip 变更前先 flush，避免 deferred text batch 跨 scissor 边界提交到错误状态
         flushDeferredTextBatch();
         clipStack.push(left, top, right, bottom, screenWidth, screenHeight, cornerRadii);
-        applyCurrentClip();
+        try {
+            applyCurrentClip();
+        } catch (RuntimeException | Error applyFailure) {
+            // 原子入栈：apply 失败即把刚压入的层弹出，保证「抛出 ⇒ 未入栈」。
+            // 否则调用方的 clipPushed 标志来不及置位就抛出（如 UiBackdropFilterRenderer），
+            // finally 会少 pop 一次，多出来的裁剪层留在栈里影响本帧后续所有绘制（R21）。
+            clipStack.pop();
+            throw applyFailure;
+        }
     }
 
     public void popClip() {
-        flushDeferredTextBatch();
+        Throwable flushFailure = null;
+        try {
+            flushDeferredTextBatch();
+        } catch (RuntimeException failure) {
+            flushFailure = failure;
+        } catch (Error failure) {
+            flushFailure = failure;
+        }
+        // 与 pushClip 对称的原子语义：flush 失败也必须继续弹栈与回放 GL。
+        // 调用方（如 UiBackdropFilterRenderer 的 finally）只会消费一次 popClip，漏弹会让多出来的
+        // 裁剪层留在栈里影响本帧后续绘制——即 R21 的镜像窗口。
         clipStack.pop();
-        applyCurrentClip();
+        try {
+            applyCurrentClip();
+        } catch (RuntimeException failure) {
+            flushFailure = flushFailure == null ? failure : preferCleanupFailure(flushFailure, failure);
+        } catch (Error failure) {
+            flushFailure = flushFailure == null ? failure : preferCleanupFailure(flushFailure, failure);
+        }
+        rethrowClipFailure(flushFailure);
+    }
+
+    /** 重抛裁剪状态变更中累积的失败（unchecked 透传）。 */
+    private static void rethrowClipFailure(Throwable failure) {
+        if (failure == null) {
+            return;
+        }
+        if (failure instanceof RuntimeException) {
+            throw (RuntimeException) failure;
+        }
+        throw (Error) failure;
     }
 
     /**

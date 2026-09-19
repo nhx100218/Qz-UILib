@@ -112,15 +112,32 @@ public class GlStateRecoveryContractTest {
                 occurrences(source(BACKDROP), "restoreStep(restoreFailure,") >= 7);
     }
 
-    /** N9：变换层的 T 矩阵弹出必须在 finally 内。 */
+    /**
+     * N9 + 低危复核项：变换层的 T 矩阵弹出必须无条件执行，且弹栈失败不得替换回贴失败。
+     *
+     * <p>原实现用 try/finally：finally 内弹栈若抛，会顶掉 composite 的原异常。现实现改为
+     * 「两段 try，各自把失败累积进 rememberFailure，最后统一 rethrow」——弹栈仍在回贴之后
+     * 无条件执行，但不再吞掉或替换主异常。</p>
+     */
     @Test
-    public void transformLayerPopsMatrixInFinally() throws Exception {
+    public void transformLayerPopsMatrixUnconditionallyAndAccumulatesPopupFailure() throws Exception {
         String body = blockAfter(source(COMPOSITOR), "boolean popTransformLayer()");
-        int finallyToken = body.indexOf("} finally {");
-        assertTrue("变换层回贴必须带 finally", finallyToken >= 0);
-        String finallyBody = blockAt(body, finallyToken);
-        assertTrue("T 矩阵弹出必须在 finally 块体内（挪到 finally 之后即红）",
-                finallyBody.contains("GL11.glPopMatrix();"));
+        int compositeCatch = body.indexOf("rememberFailure(failure, compositeFailure);");
+        // 注意：本方法开头还有一次 MODELVIEW pop（步骤 1），故必须从 composite 之后找 T 的弹出。
+        int popToken = body.indexOf("GL11.glPopMatrix();", compositeCatch);
+        int popCatch = body.indexOf("rememberFailure(failure, popFailure);");
+        assertTrue("回贴失败必须先累积再继续弹栈", compositeCatch >= 0);
+        assertTrue("T 矩阵弹出必须在回贴尝试之后执行",
+                popToken > compositeCatch && body.lastIndexOf("try {", popToken) > compositeCatch);
+        // 「无条件执行」必须真的验：弹栈所在 try 与回贴 catch 之间不得出现条件/提前返回
+        // （否则「回贴失败就不弹栈」这种变异会全绿放行——独立复核实测过该变异）。
+        String betweenCompositeAndPop = body.substring(compositeCatch, popToken);
+        assertFalse("弹栈不得被条件化：回贴 catch 与弹栈之间出现 if/else/return 即红",
+                betweenCompositeAndPop.contains("if (") || betweenCompositeAndPop.contains("else")
+                        || betweenCompositeAndPop.contains("return"));
+        assertTrue("弹栈失败必须累积而不是替换回贴失败", popCatch > popToken);
+        assertTrue("失败必须统一 rethrow 且两个失败都进了同一个累积器",
+                body.contains("rethrow(failure[0]);"));
     }
 
     /** N15：字体围栏 push 必须能在中途失败时回滚，pop 必须累积失败。 */

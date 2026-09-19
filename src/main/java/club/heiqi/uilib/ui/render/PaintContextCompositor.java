@@ -288,6 +288,7 @@ public final class PaintContextCompositor {
         // 显式 glMatrixMode(MODELVIEW)：end() 的 glPopAttrib 可能恢复 matrix mode 到 begin 前状态
         GL11.glMatrixMode(GL11.GL_MODELVIEW);
         GL11.glPushMatrix();
+        Throwable[] failure = new Throwable[1];
         try {
             float originX = frame.left + frame.originXRatio * (frame.right - frame.left);
             float originY = frame.top + frame.originYRatio * (frame.bottom - frame.top);
@@ -297,10 +298,24 @@ public final class PaintContextCompositor {
             GL11.glTranslatef(-originX, -originY, 0.0f);
             // 5. composite 回贴（quad 吃 T 旋转，父 clip 二次裁切——带参版 :171 不关 scissor 是物理基础）
             frame.layer.compositeToCurrentFramebuffer(frame.left, frame.top, frame.right, frame.bottom, 1.0F);
-        } finally {
+        } catch (RuntimeException compositeFailure) {
+            rememberFailure(failure, compositeFailure);
+        } catch (Error compositeFailure) {
+            rememberFailure(failure, compositeFailure);
+        }
+        try {
             // 6. popTransform（弹 T）：回贴失败也必须弹出，否则本帧后续绘制整体继承本层 T（GL 自净审查 N9）。
             GL11.glMatrixMode(GL11.GL_MODELVIEW);
             GL11.glPopMatrix();
+        } catch (RuntimeException popFailure) {
+            // 弹栈失败挂 suppressed，不替换回贴失败；唯一例外是弹栈失败为致命 Error 时按统一口径升级
+            // （rememberFailure 的 isFatal 分支），此时 VM 级失败当主异常（独立复核登记项）。
+            rememberFailure(failure, popFailure);
+        } catch (Error popFailure) {
+            rememberFailure(failure, popFailure);
+        }
+        if (failure[0] != null) {
+            rethrow(failure[0]);
         }
         borrowedLayerCount = Math.min(borrowedLayerCount, frame.layerIndex);
         return true;

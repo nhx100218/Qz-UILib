@@ -87,7 +87,18 @@ public class UiHudRenderListenerGlFenceTest {
         assertFalse(source.contains("GL_TEXTURE_STACK_DEPTH"));
         assertFalse(source.contains("Tessellator"));
         assertFalse(source.contains("glGetError"));
-        assertFalse(source.contains("Framebuffer"));
+        // 「重兼容 FBO」的负向清单在 N11 之后按**意图**改写：围栏现在需要读回/写回宿主的
+        // draw/read framebuffer 绑定（状态守恒，属 N11），但仍然不得创建/删除 FBO、读写 FBO 像素，
+        // 也不得引用 MC 的 Framebuffer 包装类或渲染缓冲。原先按子串 "Framebuffer" 拦会把
+        // glBindFramebuffer 一并拦掉，等同于禁止状态守恒。
+        assertFalse("不得引用 MC 的 Framebuffer 包装类", source.contains("net.minecraft.client.shader.Framebuffer"));
+        assertFalse("不得走 MC 的 getFramebuffer() 兼容路径", source.contains("getFramebuffer()"));
+        assertFalse("不得创建 FBO", source.contains("glGenFramebuffers"));
+        assertFalse("不得删除 FBO", source.contains("glDeleteFramebuffers"));
+        assertFalse("不得读写 FBO 像素", source.contains("glReadPixels") || source.contains("glBlitFramebuffer"));
+        assertFalse("不得挂 FBO 附件（附件管理属离屏层职责，不是状态守恒）",
+                source.contains("glFramebufferTexture") || source.contains("glFramebufferRenderbuffer"));
+        assertFalse("不得做 FBO 状态诊断", source.contains("glCheckFramebufferStatus"));
         assertFalse(source.contains("Renderbuffer"));
         assertFalse(source.contains("findDrift"));
     }

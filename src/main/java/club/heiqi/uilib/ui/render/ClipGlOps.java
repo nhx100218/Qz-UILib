@@ -25,12 +25,20 @@ interface ClipGlOps {
     void getIntegers(int pname, IntBuffer params);
 
     /**
-     * 标量查询（如 stencil func/ref/mask/op）。
+     * 标量查询（如 stencil func/ref/mask/op、depth write mask）。
      *
      * @param pname 参数名
      * @return 当前值
      */
     int getInteger(int pname);
+
+    /**
+     * 布尔向量查询（{@code GL_COLOR_WRITEMASK} 只有 boolean 查询面）。
+     *
+     * @param pname 参数名
+     * @param target 输出数组，长度即读取的元素个数；实现按剩余容量校验，生产实现上限 16
+     */
+    void getBooleans(int pname, boolean[] target);
 
     void scissor(int x, int y, int width, int height);
 

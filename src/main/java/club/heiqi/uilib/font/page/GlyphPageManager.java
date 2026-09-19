@@ -1229,7 +1229,9 @@ public class GlyphPageManager {
         }
         if (rollbackFailure != null) {
             if (originalFailure != null) {
-                originalFailure.addSuppressed(rollbackFailure);
+                // 统一走 appendFailure：本方法上方已按致命口径升级过 rollbackFailure，
+                // 裸 addSuppressed 会当场把它降回 suppressed（独立复核登记项）。
+                originalFailure = appendFailure(originalFailure, rollbackFailure);
             } else {
                 throwUnchecked(rollbackFailure);
             }
@@ -1850,6 +1852,7 @@ public class GlyphPageManager {
             }
         }
 
+        /** 回滚失败只作为附加信息挂到调用方正在抛的异常上（升级会替换掉主因）。 */
         private void rollbackAfterCommitFailure(Throwable originalFailure) {
             try {
                 rollback();
@@ -1916,12 +1919,31 @@ public class GlyphPageManager {
         }
     }
 
+    /**
+     * 合并失败：首个失败为主异常；同一实例不得自挂 suppressed；致命 {@link Error} 升级为主异常
+     * （与仓内 {@code UiRenderTarget}/{@code UiHostRenderSupport} 口径一致）。
+     */
     private static Throwable appendFailure(Throwable primary, Throwable additional) {
         if (primary == null) {
             return additional;
         }
+        if (additional == null) {
+            return primary;
+        }
+        if (primary == additional) {
+            return primary;
+        }
+        if (isFatal(additional) && !isFatal(primary)) {
+            additional.addSuppressed(primary);
+            return additional;
+        }
         primary.addSuppressed(additional);
         return primary;
+    }
+
+    /** {@link LinkageError} 属可恢复的类加载失败，其余 Error 视为致命。 */
+    private static boolean isFatal(Throwable failure) {
+        return failure instanceof Error && !(failure instanceof LinkageError);
     }
 
     private void assertRuntimeAccess() {

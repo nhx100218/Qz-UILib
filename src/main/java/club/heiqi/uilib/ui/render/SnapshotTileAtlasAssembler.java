@@ -12,6 +12,13 @@ import club.heiqi.uilib.util.UiNumbers;
 
 /**
  * 负责把同帧已捕获 tile 组装为新的快照 atlas。
+ *
+ * <p><b>状态契约</b>：本类的公开入口会改写 FBO 绑定/附件、viewport、program、blend 与颜色等状态，
+ * 而它们都<strong>不在</strong>帧围栏的快照集合内（围栏只恢复固定管线状态与绑定类对象）。
+ * 因此所有入口必须在 {@code UiMainLayerSnapshotService} 的
+ * {@code glPushAttrib(GL_ALL_ATTRIB_BITS)} 信封内调用（现网调用链均满足，见 GL 自净审查 N18）。
+ * 唯一自带保存/恢复的是矩阵助手 {@code drawAtlasTextureQuad}（矩阵栈内容与 matrix mode
+ * 都不受 attrib 帧管辖）。</p>
  */
 final class SnapshotTileAtlasAssembler {
 
@@ -101,6 +108,9 @@ final class SnapshotTileAtlasAssembler {
     /**
      * 把缺失 tile 从当前 read framebuffer 写入 atlas 原始纹理。
      *
+     * <p>状态契约：会改写纹理绑定与 read/draw framebuffer 绑定；必须在调用方的
+     * {@code glPushAttrib(GL_ALL_ATTRIB_BITS)} 信封内调用（见类 javadoc）。</p>
+     *
      * @param snapshot                  目标 snapshot
      * @param screenHeight              屏幕高度
      * @param readFramebufferId         read framebuffer
@@ -137,6 +147,9 @@ final class SnapshotTileAtlasAssembler {
 
     /**
      * 把可复用 tile 从既有 snapshot 源纹理绘制到新的 atlas 原始纹理。
+     *
+     * <p>状态契约：会改写 draw framebuffer 绑定与附件、viewport、program、blend 与颜色；
+     * 必须在调用方的 {@code glPushAttrib(GL_ALL_ATTRIB_BITS)} 信封内调用（见类 javadoc）。</p>
      *
      * @param snapshot    目标 snapshot
      * @param atlasRegion atlas 采样区域
@@ -227,6 +240,12 @@ final class SnapshotTileAtlasAssembler {
     /**
      * 在当前 draw framebuffer 上按 top-left 坐标绘制纹理子矩形。
      *
+     * <p>状态契约：本方法自带投影/模型视图压栈与 matrix mode 还原（<strong>矩阵栈内容</strong>是帧围栏与
+     * attrib 帧都恢复不了的状态，必须自守；matrix mode 两者都能恢复，这里只是尽早还原）。
+     * 纹理绑定、blend、光照等 FFP 状态不在本方法职责内，由调用点所在事务回收——现网调用链
+     * 全部位于 {@code UiMainLayerSnapshotService} 的 {@code glPushAttrib(GL_ALL_ATTRIB_BITS)} 信封内
+     * （GL 自净审查 N18/N23）。</p>
+     *
      * @param targetWidth  目标宽度
      * @param targetHeight 目标高度
      * @param left         目标左侧
@@ -243,6 +262,7 @@ final class SnapshotTileAtlasAssembler {
         int previousMatrixMode = GL11.glGetInteger(GL11.GL_MATRIX_MODE);
         boolean projectionPushed = false;
         boolean modelViewPushed = false;
+        Throwable failure = null;
         try {
             GL11.glMatrixMode(GL11.GL_PROJECTION);
             GL11.glPushMatrix();
@@ -264,17 +284,63 @@ final class SnapshotTileAtlasAssembler {
             GL11.glTexCoord2f(leftU, topV);
             GL11.glVertex2f((float) left, (float) top);
             GL11.glEnd();
-        } finally {
-            if (modelViewPushed) {
+        } catch (RuntimeException drawFailure) {
+            failure = drawFailure;
+        } catch (Error drawFailure) {
+            failure = drawFailure;
+        }
+        // 逐步累积（不中断后续）：单步失败若直接传播，后面的弹出与 matrix mode 还原全部被跳过，
+        // 本帧后续绘制会继承本方法的投影/模型视图（GL 自净审查 N9 的同类失败模式）。
+        if (modelViewPushed) {
+            try {
                 GL11.glMatrixMode(GL11.GL_MODELVIEW);
                 GL11.glPopMatrix();
+            } catch (RuntimeException popFailure) {
+                failure = appendFailure(failure, popFailure);
+            } catch (Error popFailure) {
+                failure = appendFailure(failure, popFailure);
             }
-            if (projectionPushed) {
+        }
+        if (projectionPushed) {
+            try {
                 GL11.glMatrixMode(GL11.GL_PROJECTION);
                 GL11.glPopMatrix();
+            } catch (RuntimeException popFailure) {
+                failure = appendFailure(failure, popFailure);
+            } catch (Error popFailure) {
+                failure = appendFailure(failure, popFailure);
             }
-            GL11.glMatrixMode(previousMatrixMode);
         }
+        try {
+            GL11.glMatrixMode(previousMatrixMode);
+        } catch (RuntimeException modeFailure) {
+            failure = appendFailure(failure, modeFailure);
+        } catch (Error modeFailure) {
+            failure = appendFailure(failure, modeFailure);
+        }
+        if (failure != null) {
+            if (failure instanceof RuntimeException) {
+                throw (RuntimeException) failure;
+            }
+            throw (Error) failure;
+        }
+    }
+
+    /** 合并失败：首个失败为主异常，后续挂 suppressed；致命 {@link Error} 升级为主异常。 */
+    private static Throwable appendFailure(Throwable primary, Throwable additional) {
+        if (primary == null) {
+            return additional;
+        }
+        if (additional == null || primary == additional) {
+            return primary;
+        }
+        if (additional instanceof Error && !(additional instanceof LinkageError)
+                && !(primary instanceof Error && !(primary instanceof LinkageError))) {
+            additional.addSuppressed(primary);
+            return additional;
+        }
+        primary.addSuppressed(additional);
+        return primary;
     }
 
     private static boolean isBetterContainingSnapshot(FrameSnapshot currentSnapshot, FrameSnapshot candidateSnapshot) {

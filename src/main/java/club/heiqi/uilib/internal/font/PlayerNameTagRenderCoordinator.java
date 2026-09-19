@@ -106,6 +106,10 @@ public final class PlayerNameTagRenderCoordinator {
      * drawString 仍走 FontRendererFallbackInvoker 同步路径并自行幂等原版尾状态；批次内字体的 flush
      * 由 FontRenderStateGuard 还原进入态。</p>
      *
+     * <p>GL 影响范围仅限 lightmap 纹理坐标（成对恢复）；本批次运行在宿主
+     * {@code RenderGlobal.renderEntities} 上下文里，<strong>不在</strong> UI 帧围栏内，故其余 GL 状态
+     * 由宿主渲染循环负责，UILib 侧不代为守恒（GL 自净审查 N23）。</p>
+     *
      * @param batch 当前 scope 的 FIFO 回放批次
      */
     private static void runReplayBatch(Runnable batch) {

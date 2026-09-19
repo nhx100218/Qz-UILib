@@ -4,6 +4,7 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.IntBuffer;
 import java.util.ArrayDeque;
+import java.util.Arrays;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Deque;
@@ -26,7 +27,8 @@ import club.heiqi.uilib.ui.base.values.UiSurfaceStyle;
  * {@link #clearState} 仍表示「强制清空」，供 FBO 与 deferred 回放使用。</p>
  *
  * <p>宿主 stencil 恢复范围：enable、func、ref、value mask、write mask、fail/zfail/zpass op。
- * 不恢复 front/back 分离状态（本项目固定管线路径只用统一 stencil 状态）。</p>
+ * 不恢复 front/back 分离状态（本项目固定管线路径只用统一 stencil 状态）。
+ * 此外还恢复 scissor box/enable 与宿主进入时的 colorMask/depthMask 写掩码（N4）。</p>
  */
 final class ClipStack {
 
@@ -184,7 +186,9 @@ final class ClipStack {
     /**
      * 强制清空当前 OpenGL 裁切状态（关闭 scissor/stencil）。
      *
-     * <p>供 FBO/deferred 回放使用；不等于恢复宿主进入 uilib 前的基线。</p>
+     * <p>同时把 colorMask/depthMask 置为全开：这是「UI 需要写色」的刻意终端态，与
+     * {@link HostClipBaseline#applyToGl(ClipGlOps)} 的「写回捕获真值」语义相反，两者不可混用。
+     * 供 FBO/deferred 回放使用；不等于恢复宿主进入 uilib 前的基线。</p>
      */
     static void clearState() {
         ClipGlOps ops = glOps;
@@ -318,10 +322,15 @@ final class ClipStack {
         int stencilFail = ops.getInteger(GL11.GL_STENCIL_FAIL);
         int stencilZFail = ops.getInteger(GL11.GL_STENCIL_PASS_DEPTH_FAIL);
         int stencilZPass = ops.getInteger(GL11.GL_STENCIL_PASS_DEPTH_PASS);
+        // 写掩码同属宿主基线：空栈恢复时若硬编码全开，会把宿主刻意关闭的颜色/深度写通道重新打开，
+        // 之后的宿主绘制静默不写像素（N4）。GL_COLOR_WRITEMASK 只有 boolean 查询面。
+        boolean[] colorMask = new boolean[4];
+        ops.getBooleans(GL11.GL_COLOR_WRITEMASK, colorMask);
+        boolean depthMask = ops.getInteger(GL11.GL_DEPTH_WRITEMASK) != GL11.GL_FALSE;
 
         return new HostClipBaseline(scissorEnabled, glX, glY, glWidth, glHeight, stencilEnabled,
                 stencilFunc, stencilRef, stencilValueMask, stencilWriteMask,
-                stencilFail, stencilZFail, stencilZPass);
+                stencilFail, stencilZFail, stencilZPass, colorMask, depthMask);
     }
 
     /**
@@ -435,16 +444,22 @@ final class ClipStack {
         private final int stencilFail;
         private final int stencilZFail;
         private final int stencilZPass;
+        /** 进入 uilib 时的颜色写掩码（RGBA），非空且长度为 4。 */
+        private final boolean[] colorMask;
+        /** 进入 uilib 时的深度写掩码。 */
+        private final boolean depthMask;
 
         HostClipBaseline(boolean scissorEnabled, int glX, int glY, int glWidth, int glHeight,
                 boolean stencilEnabled) {
             this(scissorEnabled, glX, glY, glWidth, glHeight, stencilEnabled,
-                    GL11.GL_ALWAYS, 0, 0xFF, 0xFF, GL11.GL_KEEP, GL11.GL_KEEP, GL11.GL_KEEP);
+                    GL11.GL_ALWAYS, 0, 0xFF, 0xFF, GL11.GL_KEEP, GL11.GL_KEEP, GL11.GL_KEEP,
+                    new boolean[] { true, true, true, true }, true);
         }
 
         HostClipBaseline(boolean scissorEnabled, int glX, int glY, int glWidth, int glHeight,
                 boolean stencilEnabled, int stencilFunc, int stencilRef, int stencilValueMask,
-                int stencilWriteMask, int stencilFail, int stencilZFail, int stencilZPass) {
+                int stencilWriteMask, int stencilFail, int stencilZFail, int stencilZPass,
+                boolean[] colorMask, boolean depthMask) {
             this.scissorEnabled = scissorEnabled;
             this.glX = glX;
             this.glY = glY;
@@ -458,6 +473,11 @@ final class ClipStack {
             this.stencilFail = stencilFail;
             this.stencilZFail = stencilZFail;
             this.stencilZPass = stencilZPass;
+            // 防御性拷贝并定长：调用方的捕获缓冲会被复用，且长度可能大于 4（查询面为通用向量）
+            this.colorMask = colorMask == null || colorMask.length < 4
+                    ? new boolean[] { true, true, true, true }
+                    : Arrays.copyOf(colorMask, 4);
+            this.depthMask = depthMask;
         }
 
         static HostClipBaseline disabled() {
@@ -541,8 +561,28 @@ final class ClipStack {
             ops.stencilFunc(stencilFunc, stencilRef, stencilValueMask);
             ops.stencilOp(stencilFail, stencilZFail, stencilZPass);
             ops.stencilMask(stencilWriteMask);
-            ops.colorMask(true, true, true, true);
-            ops.depthMask(true);
+            // 写掩码必须写回进入时的真值，不能硬编码全开（N4）：宿主若在 colorMask/depthMask 关闭的
+            // 状态下进入 uilib，全开会让其后续绘制意外写色/写深度。
+            ops.colorMask(colorMask[0], colorMask[1], colorMask[2], colorMask[3]);
+            ops.depthMask(depthMask);
+        }
+
+        /**
+         * 进入时的颜色写掩码副本。
+         *
+         * @return 长度为 4 的新数组
+         */
+        boolean[] getColorMask() {
+            return colorMask.clone();
+        }
+
+        /**
+         * 进入时的深度写掩码。
+         *
+         * @return 是否允许深度写入
+         */
+        boolean isDepthMask() {
+            return depthMask;
         }
     }
 

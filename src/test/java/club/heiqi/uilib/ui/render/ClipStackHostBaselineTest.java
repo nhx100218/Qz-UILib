@@ -1,5 +1,7 @@
 package club.heiqi.uilib.ui.render;
 
+import java.lang.reflect.Field;
+import java.nio.ByteBuffer;
 import java.nio.IntBuffer;
 import java.util.ArrayList;
 import java.util.List;
@@ -158,7 +160,8 @@ public class ClipStackHostBaselineTest {
         ClipStack.HostClipBaseline host = new ClipStack.HostClipBaseline(
                 true, 40, 50, 120, 90, true,
                 GL11.GL_EQUAL, 2, 0x0F, 0x7F,
-                GL11.GL_KEEP, GL11.GL_INCR, GL11.GL_REPLACE);
+                GL11.GL_KEEP, GL11.GL_INCR, GL11.GL_REPLACE,
+                new boolean[] { true, true, true, true }, true);
 
         // 1) 静态 null snapshot → clearState
         recorder.calls.clear();
@@ -236,6 +239,48 @@ public class ClipStackHostBaselineTest {
     }
 
     /**
+     * N4：宿主写掩码（colorMask/depthMask）必须随基线捕获并写回，不得硬编码全开。
+     *
+     * <p>宿主在 colorMask/depthMask 关闭状态下进入 uilib 时，硬编码全开会打开宿主刻意关闭的
+     * 写通道，导致其后续绘制意外写色/写深度；本判据在写回被硬编码时必然失败。</p>
+     */
+    @Test
+    public void shouldCaptureAndRestoreHostWriteMasks() {
+        RecordingClipGlOps recorder = new RecordingClipGlOps();
+        recorder.colorMask[0] = false;
+        recorder.colorMask[3] = false;
+        recorder.depthMask = false;
+        ClipStack.setGlOpsForTest(recorder);
+
+        ClipStack.HostClipBaseline captured = ClipStack.captureCurrentHostBaseline(recorder);
+        Assert.assertArrayEquals("捕获应读出宿主 colorMask",
+                new boolean[] { false, true, true, false }, captured.getColorMask());
+        Assert.assertFalse("捕获应读出宿主 depthMask", captured.isDepthMask());
+
+        recorder.calls.clear();
+        captured.applyToGl(recorder);
+        Assert.assertTrue("恢复应写回捕获的 colorMask",
+                recorder.calls.contains("colorMask:false,true,true,false"));
+        Assert.assertTrue("恢复应写回捕获的 depthMask", recorder.calls.contains("depthMask:false"));
+    }
+
+    /**
+     * issue #70 同类回归：新增的布尔查询缓冲必须满足 LWJGL2 恒定校验的 {@code remaining >= 16}。
+     *
+     * <p>生产实现 {@code RealClipGlOps} 的 {@code glGetBoolean(int, ByteBuffer)} 每次捕获写掩码都会
+     * 走该缓冲；容量改小只会在真机上以 BufferChecks 异常崩，纯 JVM 测试不作断言就是盲区。</p>
+     */
+    @Test
+    public void booleanQueryBufferProvidesAtLeastSixteenRemainingBytes() throws Exception {
+        Field field = RealClipGlOps.class.getDeclaredField("BOOLEAN_QUERY_BUFFER");
+        field.setAccessible(true);
+        ThreadLocal<?> holder = (ThreadLocal<?>) field.get(null);
+        ByteBuffer buffer = (ByteBuffer) holder.get();
+        Assert.assertTrue("布尔查询缓冲 remaining 必须 >= 16，实际 " + buffer.remaining(),
+                buffer.remaining() >= 16);
+    }
+
+    /**
      * pushClip / popClip 改变 clip 前应 flush deferred text batch。
      */
     @Test
@@ -283,6 +328,8 @@ public class ClipStackHostBaselineTest {
         private int stencilZFail = GL11.GL_KEEP;
         private int stencilZPass = GL11.GL_KEEP;
         private final int[] scissorBox = new int[] { 0, 0, 0, 0 };
+        private final boolean[] colorMask = new boolean[] { true, true, true, true };
+        private boolean depthMask = true;
 
         private boolean hasScissor(int x, int y, int w, int h) {
             return calls.contains("scissor:" + x + "," + y + "," + w + "," + h);
@@ -345,7 +392,18 @@ public class ClipStackHostBaselineTest {
             if (pname == GL11.GL_STENCIL_PASS_DEPTH_PASS) {
                 return stencilZPass;
             }
+            if (pname == GL11.GL_DEPTH_WRITEMASK) {
+                return depthMask ? GL11.GL_TRUE : GL11.GL_FALSE;
+            }
             return 0;
+        }
+
+        @Override
+        public void getBooleans(int pname, boolean[] target) {
+            calls.add("getBooleans:" + pname);
+            if (pname == GL11.GL_COLOR_WRITEMASK) {
+                System.arraycopy(colorMask, 0, target, 0, Math.min(colorMask.length, target.length));
+            }
         }
 
         @Override

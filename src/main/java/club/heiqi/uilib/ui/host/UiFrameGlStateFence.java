@@ -27,9 +27,13 @@ import org.lwjgl.opengl.GLContext;
  * 可用性不影响本类的恢复语义；第三方 attrib 泄漏的兜底与「深度不可读时降级 no-op」的留痕由
  * {@code util.GlAttribDepth} 承担（warn-once，见该类 javadoc）。GL 自净审查 N13 的处置口径以此为准。</p>
  *
- * <p>不覆盖的状态与理由：framebuffer 绑定、深度函数、CLEAR 值、纹理环境与混合方程等不在快照内，
- * 由帧内的离屏层（{@code UiRenderTarget} 进层时的全量 attrib 帧）与各组件自恢复；
- * 矩阵栈内容与 client 顶点数组状态亦不在此围栏职责内。改动本类的快照集合前请先读
+ * <p>快照覆盖：enable 位、blend 因子、颜色、scissor box、stencil 全量、colorMask/depthMask、
+ * viewport、深度函数与 CLEAR 深度、active texture 与各单元 TEXTURE_2D 绑定、program、VAO、
+ * array/element buffer，以及能力档位（OpenGL30）存在时的 framebuffer 绑定。</p>
+ *
+ * <p>不覆盖的状态与理由：纹理环境（texEnv）与混合方程不在快照内，由帧内的离屏层
+ * （{@code UiRenderTarget} 进层时的全量 attrib 帧）与各组件自恢复；矩阵栈内容与 client 顶点数组
+ * 状态亦不在此围栏职责内（矩阵栈只在 capture 时压围栏帧、帧末按量弹出）。改动本类的快照集合前请先读
  * {@code docs/历史报告/审查/2026-09-19-GL使用自净审查.md}。</p>
  */
 public final class UiFrameGlStateFence {
@@ -43,6 +47,7 @@ public final class UiFrameGlStateFence {
         boolean supportsBuffers();
         boolean supportsProgram();
         boolean supportsVertexArray();
+        boolean supportsFramebuffer();
         boolean isEnabled(int capability);
         int getInteger(int name);
         void readIntegers(int name, int[] target);
@@ -62,6 +67,9 @@ public final class UiFrameGlStateFence {
         void stencilOp(int fail, int depthFail, int depthPass);
         void colorMask(boolean red, boolean green, boolean blue, boolean alpha);
         void depthMask(boolean enabled);
+        void depthFunc(int function);
+        void clearDepth(float depth);
+        void bindFramebuffer(int target, int framebuffer);
         void viewport(int x, int y, int width, int height);
         void useProgram(int program);
         void bindVertexArray(int vertexArray);
@@ -111,7 +119,7 @@ public final class UiFrameGlStateFence {
                 restoreFailure = failure;
             }
             if (restoreFailure != null) {
-                if (frameFailure != null) restoreFailure.addSuppressed(frameFailure);
+                restoreFailure = appendFailure(restoreFailure, frameFailure);
                 throwUnchecked(restoreFailure);
             }
             if (frameFailure != null) throwUnchecked(frameFailure);
@@ -151,11 +159,18 @@ public final class UiFrameGlStateFence {
         gl.readBooleans(GL11.GL_COLOR_WRITEMASK, snapshot.colorMask);
         snapshot.depthMask = gl.getInteger(GL11.GL_DEPTH_WRITEMASK) != GL11.GL_FALSE;
         gl.readIntegers(GL11.GL_VIEWPORT, snapshot.viewport);
+        // 深度函数与 CLEAR 深度：帧内的离屏层会写它们（MinecraftHostImageRenderer.prepareHostImageState
+        // 就硬置 depthFunc(LEQUAL)），UiHostRenderSupport 的 deferred 回放还会硬置 depthFunc/clearDepth
+        // （该路径当前库内零调用，接线后立即适用）。离屏层的 attrib 帧虽能兜住一部分，但宿主
+        // （实体/世界渲染）依赖的是真值，围栏必须自己恢复（N11）。
+        snapshot.depthFunc = gl.getInteger(GL11.GL_DEPTH_FUNC);
+        gl.readFloats(GL11.GL_DEPTH_CLEAR_VALUE, snapshot.depthClearValue);
 
         snapshot.hasActiveTexture = gl.supportsActiveTexture();
         snapshot.hasProgram = gl.supportsProgram();
         snapshot.hasVertexArray = gl.supportsVertexArray();
         snapshot.hasBuffers = gl.supportsBuffers();
+        snapshot.hasFramebuffer = gl.supportsFramebuffer();
         captureOptionalBindings();
         pushMatrices();
     }
@@ -173,6 +188,15 @@ public final class UiFrameGlStateFence {
             } finally {
                 gl.activeTexture(snapshot.activeTexture);
             }
+        }
+        // FBO 绑定：离屏层进出会改写，宿主的 draw/read framebuffer 必须各自回到进入时的值（N11）。
+        // 分开捕获的理由：GL3.0 起 draw 与 read 可分离绑定，GL_FRAMEBUFFER_BINDING 只等价于
+        // GL_DRAW_FRAMEBUFFER_BINDING（同值 0x8CA6），用 glBindFramebuffer(GL_FRAMEBUFFER, …) 恢复会
+        // 连带把 read 覆盖成 draw 值。口径与 UiRenderTarget/UiMainLayerSnapshotService 一致。
+        // 查询只在 OpenGL30 档位存在时发出，避免在无 FBO 的 context 上留 GL error。
+        if (snapshot.hasFramebuffer) {
+            snapshot.drawFramebufferBinding = gl.getInteger(GL30.GL_DRAW_FRAMEBUFFER_BINDING);
+            snapshot.readFramebufferBinding = gl.getInteger(GL30.GL_READ_FRAMEBUFFER_BINDING);
         }
         if (snapshot.hasProgram) snapshot.program = gl.getInteger(GL20.GL_CURRENT_PROGRAM);
         if (snapshot.hasVertexArray) snapshot.vertexArray = gl.getInteger(GL30.GL_VERTEX_ARRAY_BINDING);
@@ -232,7 +256,7 @@ public final class UiFrameGlStateFence {
             rollbackFailure = appendFailure(rollbackFailure, failure);
         }
         if (rollbackFailure != null) {
-            rollbackFailure.addSuppressed(captureFailure);
+            rollbackFailure = appendFailure(rollbackFailure, captureFailure);
             throwUnchecked(rollbackFailure);
         }
         throwUnchecked(captureFailure);
@@ -293,8 +317,12 @@ public final class UiFrameGlStateFence {
         if (failure != null) throwUnchecked(failure);
     }
 
-    /** 恢复能力感知的 texture、program、VAO 与 buffer binding。 */
+    /** 恢复能力感知的 framebuffer、texture、program、VAO 与 buffer binding。 */
     private void restoreOptionalBindings() {
+        if (snapshot.hasFramebuffer) {
+            gl.bindFramebuffer(GL30.GL_DRAW_FRAMEBUFFER, snapshot.drawFramebufferBinding);
+            gl.bindFramebuffer(GL30.GL_READ_FRAMEBUFFER, snapshot.readFramebufferBinding);
+        }
         if (snapshot.hasProgram) gl.useProgram(snapshot.program);
         if (snapshot.hasActiveTexture) {
             gl.activeTexture(GL13.GL_TEXTURE0);
@@ -326,6 +354,8 @@ public final class UiFrameGlStateFence {
         gl.stencilOp(snapshot.stencilFail, snapshot.stencilDepthFail, snapshot.stencilDepthPass);
         gl.colorMask(snapshot.colorMask[0], snapshot.colorMask[1], snapshot.colorMask[2], snapshot.colorMask[3]);
         gl.depthMask(snapshot.depthMask);
+        gl.depthFunc(snapshot.depthFunc);
+        gl.clearDepth(snapshot.depthClearValue[0]);
         gl.viewport(snapshot.viewport[0], snapshot.viewport[1], snapshot.viewport[2], snapshot.viewport[3]);
         gl.setEnabled(GL11.GL_DEPTH_TEST, snapshot.depthTest);
         gl.setEnabled(GL11.GL_CULL_FACE, snapshot.cullFace);
@@ -336,9 +366,11 @@ public final class UiFrameGlStateFence {
         gl.setEnabled(GL11.GL_STENCIL_TEST, snapshot.stencilTest);
     }
 
-    /** 合并清理失败，保留第一次失败作为主异常。 */
+    /** 合并清理失败，保留第一次失败作为主异常；同一实例不得自挂 suppressed。 */
     private static Throwable appendFailure(Throwable primary, Throwable next) {
         if (primary == null) return next;
+        if (next == null) return primary;
+        if (primary == next) return primary;
         primary.addSuppressed(next);
         return primary;
     }
@@ -353,7 +385,7 @@ public final class UiFrameGlStateFence {
     private static final class Snapshot {
         private boolean depthTest, cullFace, alphaTest, lighting, blend, scissorTest, stencilTest, texture2d;
         private boolean depthMask;
-        private boolean hasActiveTexture, hasProgram, hasVertexArray, hasBuffers;
+        private boolean hasActiveTexture, hasProgram, hasVertexArray, hasBuffers, hasFramebuffer;
         private boolean activeTexture2d, texture0Enabled;
         private int matrixMode;
         /** capture 时的 attrib 栈深度：帧末按量弹出第三方在帧内泄漏的层级（R19）。 */
@@ -363,6 +395,11 @@ public final class UiFrameGlStateFence {
         private int stencilFail, stencilDepthFail, stencilDepthPass;
         private int activeTexture, activeTextureBinding, texture0Binding;
         private int program, vertexArray, arrayBuffer, elementBuffer;
+        /** 帧内离屏层会改写 depthFunc 与 CLEAR 深度，宿主可能是任一非默认值（N11）。 */
+        private int depthFunc;
+        /** draw/read 分离绑定：必须分别捕获与恢复（N11）。 */
+        private int drawFramebufferBinding, readFramebufferBinding;
+        private final float[] depthClearValue = new float[1];
         private final float[] color = new float[4];
         private final int[] scissor = new int[4];
         private final boolean[] colorMask = new boolean[4];
@@ -389,6 +426,7 @@ public final class UiFrameGlStateFence {
         @Override public boolean supportsBuffers() { return capabilities().OpenGL15; }
         @Override public boolean supportsProgram() { return capabilities().OpenGL20; }
         @Override public boolean supportsVertexArray() { return capabilities().OpenGL30; }
+        @Override public boolean supportsFramebuffer() { return capabilities().OpenGL30; }
         @Override public boolean isEnabled(int capability) { return GL11.glIsEnabled(capability); }
         @Override public int getInteger(int name) { return GL11.glGetInteger(name); }
         @Override public void readIntegers(int name, int[] target) {
@@ -432,6 +470,11 @@ public final class UiFrameGlStateFence {
             GL11.glColorMask(red, green, blue, alpha);
         }
         @Override public void depthMask(boolean enabled) { GL11.glDepthMask(enabled); }
+        @Override public void depthFunc(int function) { GL11.glDepthFunc(function); }
+        @Override public void clearDepth(float depth) { GL11.glClearDepth(depth); }
+        @Override public void bindFramebuffer(int target, int framebuffer) {
+            GL30.glBindFramebuffer(target, framebuffer);
+        }
         @Override public void viewport(int x, int y, int width, int height) { GL11.glViewport(x, y, width, height); }
         @Override public void useProgram(int program) { GL20.glUseProgram(program); }
         @Override public void bindVertexArray(int vertexArray) { GL30.glBindVertexArray(vertexArray); }

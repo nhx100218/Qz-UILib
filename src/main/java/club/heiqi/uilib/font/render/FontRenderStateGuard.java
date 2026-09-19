@@ -254,10 +254,22 @@ public class FontRenderStateGuard implements FontRenderStateExecutor {
         gl.pushMatrix();
     }
 
-    /** push 中途失败时回滚已压入的 attrib / client attrib / 矩阵栈；回滚失败优先抛出，压入失败作为 suppressed 保留。 */
+    /**
+     * push 中途失败时回滚已压入的 attrib / client attrib / 矩阵栈与 active texture 单元。
+     *
+     * <p>失败优先级：致命 {@link Error} > 回滚失败 > 压入失败（压入失败作为 suppressed 保留）。
+     * 回滚每一步都不跳过后续，理由同 {@link #pop()}。</p>
+     */
     private void rollbackPush(int matrixStacksPushed, boolean clientAttribPushed, boolean attribPushed,
             SavedState state, Throwable pushFailure) {
         Throwable rollbackFailure = null;
+        // 先回到 push 时的 active unit：GL_TEXTURE 矩阵栈属于 texture unit，而 push 在切到 TEXTURE0
+        // 之后（:135 起）才可能失败，此时若先弹矩阵栈就会弹到 unit0（下溢）并让入口单元残留一层未弹帧。
+        // 与本文件 pop() 的既有规则一致。state.activeTexture 只在读取成功后才非 0（GL_TEXTURE0 是 33984），
+        // 0 表示尚未读到，此时不动单元。
+        if (state.activeTexture != 0) {
+            rollbackFailure = recordFailure(rollbackFailure, () -> gl.activeTexture(state.activeTexture));
+        }
         // 逐步累积：任一步弹栈失败都不能跳过后续——否则矩阵栈会残留多层帧，
         // 与 UiFrameGlStateFence.rollbackCaptureMatrices 的逐项写法对齐（独立复核 C 项）。
         if (matrixStacksPushed >= 3) {
@@ -277,7 +289,7 @@ public class FontRenderStateGuard implements FontRenderStateExecutor {
             }
         } catch (RuntimeException exception) {
             rollbackFailure = appendFailure(rollbackFailure, exception);
-        } catch (LinkageError error) {
+        } catch (Error error) {
             rollbackFailure = appendFailure(rollbackFailure, error);
         }
         try {
@@ -286,34 +298,60 @@ public class FontRenderStateGuard implements FontRenderStateExecutor {
             }
         } catch (RuntimeException exception) {
             rollbackFailure = appendFailure(rollbackFailure, exception);
-        } catch (LinkageError error) {
+        } catch (Error error) {
             rollbackFailure = appendFailure(rollbackFailure, error);
         }
         if (rollbackFailure != null) {
-            rollbackFailure.addSuppressed(pushFailure);
-            throwUnchecked(rollbackFailure);
+            throwUnchecked(appendFailure(rollbackFailure, pushFailure));
         }
         throwUnchecked(pushFailure);
     }
 
-    /** 执行一步恢复并累积失败（不中断后续步骤）。 */
+    /**
+     * 执行一步恢复并累积失败（不中断后续步骤）。
+     *
+     * <p>捕获面为全部 unchecked 失败（含 VM 级 {@link Error}）：恢复链中途抛出时直接向上传播会
+     * 跳过后续步骤，导致 program/纹理/VAO/buffer/viewport 全部不还原（GL 自净审查 N15 的同类失败模式）。
+     * 致命性由 {@link #appendFailure} 保留，不会被降级成 suppressed。</p>
+     */
     private static Throwable recordFailure(Throwable failure, Runnable step) {
         try {
             step.run();
         } catch (RuntimeException exception) {
             return appendFailure(failure, exception);
-        } catch (LinkageError error) {
+        } catch (Error error) {
             return appendFailure(failure, error);
         }
         return failure;
     }
 
+    /**
+     * 合并失败：第一个失败为主异常，后续失败挂 suppressed；致命 {@link Error} 升级为主异常。
+     *
+     * <p>同一实例不得自挂 suppressed（{@code addSuppressed(self)} 抛 {@code IllegalArgumentException}，
+     * 会把真正的失败替换成参数异常）——push 失败与回滚失败完全可能是同一个实例。</p>
+     */
     private static Throwable appendFailure(Throwable primary, Throwable additional) {
         if (primary == null) {
             return additional;
         }
+        if (additional == null) {
+            return primary;
+        }
+        if (primary == additional) {
+            return primary;
+        }
+        if (isFatal(additional) && !isFatal(primary)) {
+            additional.addSuppressed(primary);
+            return additional;
+        }
         primary.addSuppressed(additional);
         return primary;
+    }
+
+    /** {@link LinkageError} 属可恢复的类加载失败，其余 Error 视为致命。 */
+    private static boolean isFatal(Throwable failure) {
+        return failure instanceof Error && !(failure instanceof LinkageError);
     }
 
     private static void throwUnchecked(Throwable failure) {

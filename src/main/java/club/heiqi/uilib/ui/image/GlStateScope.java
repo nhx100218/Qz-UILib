@@ -88,6 +88,10 @@ public final class GlStateScope {
      * <p>入口态在进入时快照，任务正常完成或抛出异常时都恢复；恢复失败作为主导异常抛出，
      * 任务异常以 suppressed 保留（不因 finally 语义被替换）。</p>
      *
+     * <p>唯一的例外是「恢复失败为非致命、任务失败为致命 {@link Error}（非 {@link LinkageError}）」：
+     * 此时按仓内统一口径把致命的任务失败升级为主异常，恢复失败转 suppressed——VM 级失败
+     * 不应被降级为附注。</p>
+     *
      * @param task 要执行的任务
      */
     public void run(Runnable task) {
@@ -108,15 +112,15 @@ public final class GlStateScope {
             exit();
         } catch (RuntimeException exception) {
             exitFailure = exception;
-        } catch (LinkageError error) {
+        } catch (Error error) {
+            // exit() 的恢复链会把致命 Error 升为主异常抛出（见 recordFailure/appendFailure），
+            // 故这里必须一并接住：否则 run() 直接传播，任务异常被静默丢弃（与类 javadoc 相反）。
             exitFailure = error;
         }
         // 恢复失败作为主导异常，任务异常作为 suppressed 保留——原先 try/finally 会直接吞掉任务异常（N22）。
+        // 合并统一走 appendFailure：同一实例不自挂 suppressed，且致命 Error 不会被降级。
         if (exitFailure != null) {
-            if (taskFailure != null) {
-                exitFailure.addSuppressed(taskFailure);
-            }
-            rethrow(exitFailure);
+            rethrow(appendFailure(exitFailure, taskFailure));
         }
         if (taskFailure != null) {
             rethrow(taskFailure);
@@ -295,24 +299,53 @@ public final class GlStateScope {
         rethrow(failure);
     }
 
-    /** 执行一步恢复并记录失败（不中断后续步骤）。 */
+    /**
+     * 执行一步恢复并记录失败（不中断后续步骤）。
+     *
+     * <p>捕获面为全部 unchecked 失败（含 VM 级 {@link Error}），理由同
+     * {@code UiBackdropFilterRenderer#restoreStep}：恢复链不得因中途抛出而跳过后续步骤。
+     * 致命性由 {@link #appendFailure} 保留。</p>
+     */
     private Throwable recordFailure(Throwable failure, Runnable step) {
         try {
             step.run();
         } catch (RuntimeException exception) {
             return appendFailure(failure, exception);
-        } catch (LinkageError error) {
+        } catch (Error error) {
             return appendFailure(failure, error);
         }
         return failure;
     }
 
+    /**
+     * 合并失败：第一个失败为主异常，后续失败挂 suppressed。
+     *
+     * <p>两处防御：同一实例不得自挂 suppressed（{@code addSuppressed(self)} 会抛
+     * {@code IllegalArgumentException}，把恢复失败替换成参数异常）；致命 {@link Error}
+     * 不得被降级——升级为主异常、原主异常转 suppressed。口径与
+     * {@code UiRenderTarget}/{@code UiHostRenderSupport}/{@code MinecraftHostImageRenderer} 一致。</p>
+     */
     private static Throwable appendFailure(Throwable primary, Throwable additional) {
         if (primary == null) {
             return additional;
         }
+        if (additional == null) {
+            return primary;
+        }
+        if (primary == additional) {
+            return primary;
+        }
+        if (isFatal(additional) && !isFatal(primary)) {
+            additional.addSuppressed(primary);
+            return additional;
+        }
         primary.addSuppressed(additional);
         return primary;
+    }
+
+    /** {@link LinkageError} 属可恢复的类加载失败，其余 Error 视为致命。 */
+    private static boolean isFatal(Throwable failure) {
+        return failure instanceof Error && !(failure instanceof LinkageError);
     }
 
     private static void rethrow(Throwable failure) {

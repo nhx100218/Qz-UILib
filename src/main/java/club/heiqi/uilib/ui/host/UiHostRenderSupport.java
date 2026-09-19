@@ -212,6 +212,12 @@ public final class UiHostRenderSupport {
     /**
      * 在主 UI 层完成后回放补充绘制层。
      *
+     * <p><b>状态归属（N19 登记项）</b>：本入口自身不建立任何 GL 帧——它只负责提取批次并转交下面的重载；
+     * 回放期的状态硬置与矩阵压栈由 {@code prepareDeferredPostMainReplayState} 与
+     * {@code deferredRenderTarget.begin()/end()} 的 attrib 帧共同承担。调用方（宿主帧循环）必须在
+     * UI 帧围栏（{@link club.heiqi.uilib.ui.host.UiFrameGlStateFence}）或等价保护域内调用，
+     * 否则回放期写入的 FFP 状态会漂移到宿主。当前库内零调用，属未接线公开入口。</p>
+     *
      * @param context 当前渲染上下文
      * @param deferredRenderTarget 主后置离屏目标
      * @param nativeWidth 原生宽度
@@ -225,6 +231,9 @@ public final class UiHostRenderSupport {
 
     /**
      * 在主 UI 层完成后回放已提取的补充绘制批次。
+     *
+     * <p>状态归属同上面的重载：批次内容由 {@code deferredRenderTarget} 的 attrib 帧回收，
+     * 本方法只额外还原 matrix mode。库内零调用。</p>
      *
      * @param replayBatch 已提取的回放批次
      * @param deferredRenderTarget 主后置离屏目标
@@ -334,6 +343,21 @@ public final class UiHostRenderSupport {
 
     /**
      * 准备单个主后置回放批次的稳定 2D 初始状态。
+     *
+     * <p><b>契约（不是保存/恢复，而是硬置基线）</b>：本方法无条件把固定管线写成一组已知值
+     * （投影/模型视图单位矩阵、colorMask/depthMask 全开、clearDepth 1.0、清深度、关深度测试/剔除/
+     * alpha/光照、开纹理与混合、标准 alpha 混合、白色顶点色），供每个主后置 pass 的回放从一个确定的状态
+     * 出发；逐 pass 调用是因为同一 pass 可能残留自己的状态。</p>
+     *
+     * <p>它不负责还原宿主状态：唯一调用点 {@code flushDeferredPostMainPasses} 在
+     * {@code deferredRenderTarget.begin()/end()} 事务内执行（{@code UiRenderTarget} 进层时压
+     * {@code GL_ALL_ATTRIB_BITS} 帧，故上面硬置的固定管线状态由该帧的 {@code end()} 弹出恢复）。</p>
+     *
+     * <p><b>未接线声明</b>：{@code flushDeferredPostMainPasses} 的两个重载目前库内零外部调用
+     * （只有四参重载转调五参重载这一处内部调用），{@code replayDeferredPostMainPasses} 同样零调用，
+     * 所以本契约描述的是「接线后必须满足的前提」，不是既成事实；一旦接线，调用方必须自行保证该
+     * attrib 帧存在，因为帧围栏（{@link club.heiqi.uilib.ui.host.UiFrameGlStateFence}）
+     * 并不覆盖 deferred 回放路径。</p>
      */
     private static void prepareDeferredPostMainReplayState(int nativeWidth, int nativeHeight) {
         UiRenderContext.clearClipState();

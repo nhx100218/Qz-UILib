@@ -298,6 +298,9 @@ public class ScenePaintReplayer {
                         LOG.warn("IMAGE 命令宿主类型链接失败（后续同类不再告警，回放继续）：{}", isolated.toString());
                     }
                 }
+                // 其余 Error（AssertionError/OOM 等）**刻意不在此隔离**：与仓内 isFatal 口径一致
+                // （PaintContextCompositor/UiRenderTarget/UiHostRenderSupport），单张图片的 VM 级失败
+                // 升级为帧级 fail-closed，而不是"静默继续画完剩余命令"（GL 自净审查 R20 的显式声明）。
                 break;
 
             case PUSH_OPACITY:

@@ -44,13 +44,18 @@ public class UiFrameGlStateFenceTest {
         gl.buffersSupported = false;
         gl.programSupported = false;
         gl.vertexArraySupported = false;
+        gl.framebufferSupported = false;
 
-        new UiFrameGlStateFence(gl).run(() -> gl.enabled.put(GL11.GL_DEPTH_TEST, false));
+        new UiFrameGlStateFence(gl).run(() -> {
+            gl.enabled.put(GL11.GL_DEPTH_TEST, false);
+            gl.drawFramebufferBinding = 999;
+        });
 
         assertEquals(0, gl.activeTextureCalls);
         assertEquals(0, gl.programCalls);
         assertEquals(0, gl.vertexArrayCalls);
         assertEquals(0, gl.bufferCalls);
+        assertEquals("能力档位缺失时不得查询或写回 framebuffer 绑定", 0, gl.framebufferCalls);
         assertTrue(gl.enabled.get(GL11.GL_DEPTH_TEST));
     }
 
@@ -223,6 +228,8 @@ public class UiFrameGlStateFenceTest {
         private final int stencilFunction, stencilReference, stencilValueMask, stencilWriteMask;
         private final int stencilFail, stencilDepthFail, stencilDepthPass;
         private final int program, vertexArray, arrayBuffer, elementBuffer;
+        private final int drawFramebufferBinding, readFramebufferBinding, depthFunc;
+        private final float depthClearValue;
         private final boolean depthMask;
         private final float[] color;
         private final int[] scissor;
@@ -241,6 +248,10 @@ public class UiFrameGlStateFenceTest {
             stencilFail = gl.stencilFail; stencilDepthFail = gl.stencilDepthFail;
             stencilDepthPass = gl.stencilDepthPass; program = gl.program; vertexArray = gl.vertexArray;
             arrayBuffer = gl.arrayBuffer; elementBuffer = gl.elementBuffer; depthMask = gl.depthMask;
+            drawFramebufferBinding = gl.drawFramebufferBinding;
+            readFramebufferBinding = gl.readFramebufferBinding;
+            depthFunc = gl.depthFunc;
+            depthClearValue = gl.depthClearValue;
             color = gl.color.clone(); scissor = gl.scissor.clone(); colorMask = gl.colorMask.clone();
             viewport = gl.viewport.clone();
         }
@@ -259,6 +270,11 @@ public class UiFrameGlStateFenceTest {
             assertEquals(stencilDepthPass, gl.stencilDepthPass); assertEquals(program, gl.program);
             assertEquals(vertexArray, gl.vertexArray); assertEquals(arrayBuffer, gl.arrayBuffer);
             assertEquals(elementBuffer, gl.elementBuffer); assertEquals(depthMask, gl.depthMask);
+            assertEquals("draw 绑定必须恢复", drawFramebufferBinding, gl.drawFramebufferBinding);
+            assertEquals("read 绑定必须独立恢复（GL_FRAMEBUFFER 一次写两个会红）",
+                    readFramebufferBinding, gl.readFramebufferBinding);
+            assertEquals(depthFunc, gl.depthFunc);
+            assertEquals(depthClearValue, gl.depthClearValue, 0.0F);
             assertArrayEquals(color, gl.color, 0.0F); assertArrayEquals(scissor, gl.scissor);
             assertArrayEquals(colorMask, gl.colorMask); assertArrayEquals(viewport, gl.viewport);
         }
@@ -271,19 +287,22 @@ public class UiFrameGlStateFenceTest {
         private final Map<Integer, Integer> textureBindings = new HashMap<Integer, Integer>();
         private boolean activeTextureSupported = true, buffersSupported = true;
         private boolean programSupported = true, vertexArraySupported = true;
+        private boolean framebufferSupported = true;
         private int matrixMode = GL11.GL_MODELVIEW, activeTexture = GL13.GL_TEXTURE1;
         private int projectionDepth = 1, modelviewDepth = 2;
         private int blendSrcRgb = 31, blendDstRgb = 32, blendSrcAlpha = 33, blendDstAlpha = 34;
         private int stencilFunction = 41, stencilReference = 42, stencilValueMask = 43, stencilWriteMask = 44;
         private int stencilFail = 45, stencilDepthFail = 46, stencilDepthPass = 47;
         private int program = 51, vertexArray = 52, arrayBuffer = 53, elementBuffer = 54;
+        private int drawFramebufferBinding = 55, readFramebufferBinding = 56, depthFunc = 57;
+        private float depthClearValue = 0.25F;
         private boolean depthMask = false;
         private final float[] color = { 0.1F, 0.2F, 0.3F, 0.4F };
         private final int[] scissor = { 2, 3, 40, 50 };
         private final boolean[] colorMask = { true, false, true, false };
         private final int[] viewport = { 4, 5, 640, 360 };
         private int captureCalls, restoreCalls, activeTextureCalls, programCalls;
-        private int vertexArrayCalls, bufferCalls, pushCalls, popCalls, failPushNumber;
+        private int vertexArrayCalls, bufferCalls, pushCalls, popCalls, failPushNumber, framebufferCalls;
         private RuntimeException captureFailure;
         private Throwable restoreFailure;
         private Object viewportReadTarget, colorReadTarget;
@@ -307,6 +326,7 @@ public class UiFrameGlStateFenceTest {
             stencilFunction = 5; stencilReference = 6; stencilValueMask = 7; stencilWriteMask = 8;
             stencilFail = 9; stencilDepthFail = 10; stencilDepthPass = 11;
             program = 12; vertexArray = 13; arrayBuffer = 14; elementBuffer = 15; depthMask = true;
+            drawFramebufferBinding = 16; readFramebufferBinding = 17; depthFunc = 18; depthClearValue = 0.75F;
             fill(color, 0.9F); fill(scissor, 99); fill(colorMask, true); fill(viewport, 88);
         }
 
@@ -323,6 +343,7 @@ public class UiFrameGlStateFenceTest {
         @Override public boolean supportsBuffers() { return buffersSupported; }
         @Override public boolean supportsProgram() { return programSupported; }
         @Override public boolean supportsVertexArray() { return vertexArraySupported; }
+        @Override public boolean supportsFramebuffer() { return framebufferSupported; }
         @Override public boolean isEnabled(int capability) {
             if (capability == GL11.GL_TEXTURE_2D) return textureEnabled.get(activeTexture);
             return enabled.get(capability);
@@ -345,6 +366,15 @@ public class UiFrameGlStateFenceTest {
             if (name == GL11.GL_TEXTURE_BINDING_2D) return textureBindings.get(activeTexture);
             if (name == GL20.GL_CURRENT_PROGRAM) return program;
             if (name == GL30.GL_VERTEX_ARRAY_BINDING) return vertexArray;
+            if (name == GL11.GL_DEPTH_FUNC) return depthFunc;
+            if (name == GL30.GL_DRAW_FRAMEBUFFER_BINDING) {
+                if (!framebufferSupported) throw new AssertionError("能力缺失时不得查询 GL_DRAW_FRAMEBUFFER_BINDING");
+                return drawFramebufferBinding;
+            }
+            if (name == GL30.GL_READ_FRAMEBUFFER_BINDING) {
+                if (!framebufferSupported) throw new AssertionError("能力缺失时不得查询 GL_READ_FRAMEBUFFER_BINDING");
+                return readFramebufferBinding;
+            }
             if (name == GL15.GL_ARRAY_BUFFER_BINDING) return arrayBuffer;
             if (name == GL15.GL_ELEMENT_ARRAY_BUFFER_BINDING) return elementBuffer;
             throw new AssertionError("unexpected integer query " + name);
@@ -356,6 +386,10 @@ public class UiFrameGlStateFenceTest {
             } else throw new AssertionError("unexpected integer vector " + name);
         }
         @Override public void readFloats(int name, float[] target) {
+            if (name == GL11.GL_DEPTH_CLEAR_VALUE) {
+                target[0] = depthClearValue;
+                return;
+            }
             if (name != GL11.GL_CURRENT_COLOR) throw new AssertionError("unexpected float vector " + name);
             colorReadTarget = target; System.arraycopy(color, 0, target, 0, 4);
         }
@@ -399,6 +433,18 @@ public class UiFrameGlStateFenceTest {
             colorMask[0] = red; colorMask[1] = green; colorMask[2] = blue; colorMask[3] = alpha;
         }
         @Override public void depthMask(boolean value) { depthMask = value; }
+        @Override public void depthFunc(int value) { depthFunc = value; }
+        @Override public void clearDepth(float value) { depthClearValue = value; }
+        @Override public void bindFramebuffer(int target, int framebuffer) {
+            framebufferCalls++;
+            if (target == GL30.GL_DRAW_FRAMEBUFFER) {
+                drawFramebufferBinding = framebuffer;
+            } else if (target == GL30.GL_READ_FRAMEBUFFER) {
+                readFramebufferBinding = framebuffer;
+            } else {
+                throw new AssertionError("恢复必须按 draw/read 分别绑定，收到 target=" + target);
+            }
+        }
         @Override public void viewport(int x, int y, int width, int height) {
             viewport[0] = x; viewport[1] = y; viewport[2] = width; viewport[3] = height;
         }

@@ -1,5 +1,7 @@
 package club.heiqi.uilib.ui.render;
 
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.nio.IntBuffer;
 
 import org.lwjgl.opengl.GL11;
@@ -10,6 +12,19 @@ import org.lwjgl.opengl.GL11;
 final class RealClipGlOps implements ClipGlOps {
 
     static final RealClipGlOps INSTANCE = new RealClipGlOps();
+
+    /**
+     * 布尔查询缓冲。
+     *
+     * <p>LWJGL2 的 {@code glGetBoolean(int, ByteBuffer)} 经 BufferChecks 恒定校验
+     * {@code remaining >= 16}（issue #70），故固定分配 16 字节；复制只取 target 长度个元素。</p>
+     */
+    private static final ThreadLocal<ByteBuffer> BOOLEAN_QUERY_BUFFER = new ThreadLocal<ByteBuffer>() {
+        @Override
+        protected ByteBuffer initialValue() {
+            return ByteBuffer.allocateDirect(16).order(ByteOrder.nativeOrder());
+        }
+    };
 
     private RealClipGlOps() {
     }
@@ -37,6 +52,16 @@ final class RealClipGlOps implements ClipGlOps {
     @Override
     public int getInteger(int pname) {
         return GL11.glGetInteger(pname);
+    }
+
+    @Override
+    public void getBooleans(int pname, boolean[] target) {
+        ByteBuffer buffer = BOOLEAN_QUERY_BUFFER.get();
+        buffer.clear();
+        GL11.glGetBoolean(pname, buffer);
+        for (int index = 0; index < target.length; index++) {
+            target[index] = buffer.get(index) != 0;
+        }
     }
 
     @Override
