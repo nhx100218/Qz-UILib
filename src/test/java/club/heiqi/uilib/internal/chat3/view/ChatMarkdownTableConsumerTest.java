@@ -81,7 +81,7 @@ public class ChatMarkdownTableConsumerTest {
             SceneNode viewport = f.tableViewport();
             Assert.assertTrue("完整内容必须超出 HUD 视口", SceneGeometry.maxScrollY(viewport) > 0);
             Capture painted = f.capture();
-            Assert.assertTrue("完整尾文仍递交给 replay，不能被八行裁掉", painted.allText().contains("after-table"));
+            Assert.assertTrue("完整尾文仍递交给 replay，不能被行数上限裁掉", painted.allText().contains("after-table"));
             Assert.assertFalse("初始 HUD 尾文被 clip", painted.visibleText().contains("after-table"));
             assertTwoColumns(painted);
             Assert.assertFalse("语法分隔行不再字面", painted.allText().contains("---"));
@@ -187,7 +187,7 @@ public class ChatMarkdownTableConsumerTest {
                 Assert.assertTrue("非表格不可被表格视口接管", tables.isEmpty());
                 Capture capture = f.capture();
                 Assert.assertTrue(capture.allText().contains("plain-markdown"));
-                Assert.assertEquals("非表格 HUD 仍沿现有八行截断，展开保留尾文", !hud,
+                Assert.assertEquals("非表格 HUD 仍沿可见行数上限截断，展开保留尾文", !hud,
                         capture.allText().contains("plain-tail"));
             }
         }
