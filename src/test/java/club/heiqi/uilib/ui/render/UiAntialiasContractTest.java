@@ -28,7 +28,12 @@ public class UiAntialiasContractTest {
         assertTrue(rectangleClip >= 0 && rectangleClip < shaderDraw);
         assertTrue("仅固定管线回退需要自身硬圆角", shaderDraw < fallbackClip);
         assertTrue(host.indexOf("GL11.glDisable(GL11.GL_BLEND)", fallbackClip) > fallbackClip);
-        assertTrue(host.contains("if (fixedPipelineClip) context.popClip()"));
+        // 固定管线回退的 clip 必须成对弹出。P3 恢复链改造后该弹出经 restoreStep 累积（条件仍由
+        // fixedPipelineClip 守卫），故按守卫+调用顺序断言，而不是钉死单行字面形态。
+        int fixedClipGuard = host.indexOf("if (fixedPipelineClip) {");
+        assertTrue("固定管线回退的 clip 弹出必须有 fixedPipelineClip 守卫", fixedClipGuard >= 0);
+        assertTrue("固定管线回退必须真的弹出 clip",
+                host.indexOf("context.popClip();", fixedClipGuard) > fixedClipGuard);
         int alphaPass = host.indexOf("sourceAlphaPass", host.indexOf("if (isolatedLayer)"));
         int maskRgb = host.indexOf("glColorMask(false, false, false, true)");
         assertTrue("alpha 加法遍必须先关闭全部 RGB 写入", maskRgb >= 0 && maskRgb < alphaPass);

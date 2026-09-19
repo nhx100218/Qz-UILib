@@ -588,30 +588,111 @@ public final class UiMainLayerSnapshotService {
             disableForCurrentFrame("snapshot-copy-failed: " + error.getClass().getSimpleName());
             return false;
         } finally {
+            // 逐步恢复 + 失败累积：任一步抛异常都不能跳过后续恢复。原实现里 glPopAttrib() 一旦失败，
+            // 后面的 program/viewport/FBO/纹理/active texture 全部不还原（GL 自净审查 N9）。
+            Throwable restoreFailure = null;
             if (attribCaptured) {
-                GL11.glPopAttrib();
+                restoreFailure = restoreStep(restoreFailure, new Runnable() {
+                    @Override
+                    public void run() {
+                        GL11.glPopAttrib();
+                    }
+                });
             }
             if (programCaptured) {
-                GL20.glUseProgram(previousProgram);
+                final int program = previousProgram;
+                restoreFailure = restoreStep(restoreFailure, new Runnable() {
+                    @Override
+                    public void run() {
+                        GL20.glUseProgram(program);
+                    }
+                });
             }
             if (viewportCaptured) {
-                GL11.glViewport(previousViewport.get(0), previousViewport.get(1), previousViewport.get(2),
-                        previousViewport.get(3));
+                final int viewportX = previousViewport.get(0);
+                final int viewportY = previousViewport.get(1);
+                final int viewportWidth = previousViewport.get(2);
+                final int viewportHeight = previousViewport.get(3);
+                restoreFailure = restoreStep(restoreFailure, new Runnable() {
+                    @Override
+                    public void run() {
+                        GL11.glViewport(viewportX, viewportY, viewportWidth, viewportHeight);
+                    }
+                });
             }
             if (drawFramebufferCaptured) {
-                GL30.glBindFramebuffer(GL30.GL_DRAW_FRAMEBUFFER, previousDrawFramebufferId);
+                final int drawFramebuffer = previousDrawFramebufferId;
+                restoreFailure = restoreStep(restoreFailure, new Runnable() {
+                    @Override
+                    public void run() {
+                        GL30.glBindFramebuffer(GL30.GL_DRAW_FRAMEBUFFER, drawFramebuffer);
+                    }
+                });
             }
             if (readFramebufferCaptured) {
-                GL30.glBindFramebuffer(GL30.GL_READ_FRAMEBUFFER, previousReadFramebufferId);
+                final int readFramebuffer = previousReadFramebufferId;
+                restoreFailure = restoreStep(restoreFailure, new Runnable() {
+                    @Override
+                    public void run() {
+                        GL30.glBindFramebuffer(GL30.GL_READ_FRAMEBUFFER, readFramebuffer);
+                    }
+                });
             }
             if (textureBindingCaptured) {
-                GL13.glActiveTexture(GL13.GL_TEXTURE0);
-                GL11.glBindTexture(GL11.GL_TEXTURE_2D, previousTexture);
+                final int texture = previousTexture;
+                restoreFailure = restoreStep(restoreFailure, new Runnable() {
+                    @Override
+                    public void run() {
+                        GL13.glActiveTexture(GL13.GL_TEXTURE0);
+                        GL11.glBindTexture(GL11.GL_TEXTURE_2D, texture);
+                    }
+                });
             }
             if (activeTextureCaptured) {
-                GL13.glActiveTexture(previousActiveTexture);
+                final int activeUnit = previousActiveTexture;
+                restoreFailure = restoreStep(restoreFailure, new Runnable() {
+                    @Override
+                    public void run() {
+                        GL13.glActiveTexture(activeUnit);
+                    }
+                });
+            }
+            if (restoreFailure != null) {
+                throwUnchecked(restoreFailure);
             }
         }
+
+
+    }
+
+    /** 执行一步恢复并累积失败（不中断后续步骤）。 */
+    private static Throwable restoreStep(Throwable failure, Runnable step) {
+        try {
+            step.run();
+        } catch (RuntimeException exception) {
+            return appendFailure(failure, exception);
+        } catch (LinkageError error) {
+            return appendFailure(failure, error);
+        }
+        return failure;
+    }
+
+    private static Throwable appendFailure(Throwable primary, Throwable additional) {
+        if (primary == null) {
+            return additional;
+        }
+        primary.addSuppressed(additional);
+        return primary;
+    }
+
+    private static void throwUnchecked(Throwable failure) {
+        if (failure instanceof RuntimeException) {
+            throw (RuntimeException) failure;
+        }
+        if (failure instanceof Error) {
+            throw (Error) failure;
+        }
+        throw new RuntimeException(failure);
     }
 
     private void disableForCurrentFrame(String detail) {

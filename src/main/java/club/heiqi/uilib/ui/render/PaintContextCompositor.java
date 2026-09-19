@@ -288,16 +288,20 @@ public final class PaintContextCompositor {
         // 显式 glMatrixMode(MODELVIEW)：end() 的 glPopAttrib 可能恢复 matrix mode 到 begin 前状态
         GL11.glMatrixMode(GL11.GL_MODELVIEW);
         GL11.glPushMatrix();
-        float originX = frame.left + frame.originXRatio * (frame.right - frame.left);
-        float originY = frame.top + frame.originYRatio * (frame.bottom - frame.top);
-        GL11.glTranslatef(originX + frame.translateX, originY + frame.translateY, 0.0f);
-        GL11.glRotatef(frame.rotateDegrees, 0.0f, 0.0f, 1.0f);
-        GL11.glScalef(frame.scaleX, frame.scaleY, 1.0f);
-        GL11.glTranslatef(-originX, -originY, 0.0f);
-        // 5. composite 回贴（quad 吃 T 旋转，父 clip 二次裁切——带参版 :171 不关 scissor 是物理基础）
-        frame.layer.compositeToCurrentFramebuffer(frame.left, frame.top, frame.right, frame.bottom, 1.0F);
-        // 6. popTransform（弹 T）
-        GL11.glPopMatrix();
+        try {
+            float originX = frame.left + frame.originXRatio * (frame.right - frame.left);
+            float originY = frame.top + frame.originYRatio * (frame.bottom - frame.top);
+            GL11.glTranslatef(originX + frame.translateX, originY + frame.translateY, 0.0f);
+            GL11.glRotatef(frame.rotateDegrees, 0.0f, 0.0f, 1.0f);
+            GL11.glScalef(frame.scaleX, frame.scaleY, 1.0f);
+            GL11.glTranslatef(-originX, -originY, 0.0f);
+            // 5. composite 回贴（quad 吃 T 旋转，父 clip 二次裁切——带参版 :171 不关 scissor 是物理基础）
+            frame.layer.compositeToCurrentFramebuffer(frame.left, frame.top, frame.right, frame.bottom, 1.0F);
+        } finally {
+            // 6. popTransform（弹 T）：回贴失败也必须弹出，否则本帧后续绘制整体继承本层 T（GL 自净审查 N9）。
+            GL11.glMatrixMode(GL11.GL_MODELVIEW);
+            GL11.glPopMatrix();
+        }
         borrowedLayerCount = Math.min(borrowedLayerCount, frame.layerIndex);
         return true;
     }

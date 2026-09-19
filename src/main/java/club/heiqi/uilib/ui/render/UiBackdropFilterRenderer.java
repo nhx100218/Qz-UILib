@@ -265,19 +265,108 @@ final class UiBackdropFilterRenderer {
             drewBackdrop = true;
             return null;
         } finally {
-            if (fixedPipelineClip) context.popClip();
-            if (stateCaptured) {
-                GL20.glUseProgram(previousProgram);
-                GL13.glActiveTexture(previousActiveTexture);
-                GL11.glBindTexture(GL11.GL_TEXTURE_2D, previousTextureBinding);
+            // 逐步恢复 + 失败累积：前项抛异常不得跳过后续（原实现 glUseProgram 失败会让 attrib 帧
+            // 与 clip 都不弹，releaseSnapshot 也被跳过，GL 自净审查 N9）。
+            Throwable restoreFailure = null;
+            if (fixedPipelineClip) {
+                restoreFailure = restoreStep(restoreFailure, new Runnable() {
+                    @Override
+                    public void run() {
+                        context.popClip();
+                    }
+                });
             }
-            if (attribPushed) GL11.glPopAttrib();
-            if (clipPushed) context.popClip();
-            snapshotService.releaseSnapshot(snapshot);
+            if (stateCaptured) {
+                final int program = previousProgram;
+                final int activeUnit = previousActiveTexture;
+                final int texture = previousTextureBinding;
+                restoreFailure = restoreStep(restoreFailure, new Runnable() {
+                    @Override
+                    public void run() {
+                        GL20.glUseProgram(program);
+                    }
+                });
+                restoreFailure = restoreStep(restoreFailure, new Runnable() {
+                    @Override
+                    public void run() {
+                        GL13.glActiveTexture(activeUnit);
+                    }
+                });
+                restoreFailure = restoreStep(restoreFailure, new Runnable() {
+                    @Override
+                    public void run() {
+                        GL11.glBindTexture(GL11.GL_TEXTURE_2D, texture);
+                    }
+                });
+            }
+            if (attribPushed) {
+                restoreFailure = restoreStep(restoreFailure, new Runnable() {
+                    @Override
+                    public void run() {
+                        GL11.glPopAttrib();
+                    }
+                });
+            }
+            if (clipPushed) {
+                restoreFailure = restoreStep(restoreFailure, new Runnable() {
+                    @Override
+                    public void run() {
+                        context.popClip();
+                    }
+                });
+            }
+            if (snapshot != null) {
+                restoreFailure = restoreStep(restoreFailure, new Runnable() {
+                    @Override
+                    public void run() {
+                        snapshotService.releaseSnapshot(snapshot);
+                    }
+                });
+            }
             if (drewBackdrop) {
-                context.notifyMainLayerContentChanged();
+                restoreFailure = restoreStep(restoreFailure, new Runnable() {
+                    @Override
+                    public void run() {
+                        context.notifyMainLayerContentChanged();
+                    }
+                });
+            }
+            if (restoreFailure != null) {
+                throwUnchecked(restoreFailure);
             }
         }
+
+
+    }
+
+    /** 执行一步恢复并累积失败（不中断后续步骤）。 */
+    private static Throwable restoreStep(Throwable failure, Runnable step) {
+        try {
+            step.run();
+        } catch (RuntimeException exception) {
+            return appendFailure(failure, exception);
+        } catch (LinkageError error) {
+            return appendFailure(failure, error);
+        }
+        return failure;
+    }
+
+    private static Throwable appendFailure(Throwable primary, Throwable additional) {
+        if (primary == null) {
+            return additional;
+        }
+        primary.addSuppressed(additional);
+        return primary;
+    }
+
+    private static void throwUnchecked(Throwable failure) {
+        if (failure instanceof RuntimeException) {
+            throw (RuntimeException) failure;
+        }
+        if (failure instanceof Error) {
+            throw (Error) failure;
+        }
+        throw new RuntimeException(failure);
     }
 
     private static boolean drawBackdropTextureWithShader(int left, int top, int right, int bottom, int sampleLeft,

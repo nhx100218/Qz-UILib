@@ -5,6 +5,9 @@ import java.nio.ByteOrder;
 import java.nio.FloatBuffer;
 import java.nio.IntBuffer;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+
 import org.lwjgl.opengl.ContextCapabilities;
 import org.lwjgl.opengl.GL11;
 import org.lwjgl.opengl.GL13;
@@ -20,12 +23,18 @@ import org.lwjgl.opengl.GLContext;
  * <p>HUD 帧（{@code client.UiHudRenderListener}）与屏幕帧（{@code ui.screen.McScreenBridge}）共用同一套语义，
  * 避免两个入口的状态恢复集合出现分叉。实例、快照和查询缓冲均跨帧复用。</p>
  *
+ * <p>本围栏**不使用 attrib 属性组栈**（状态靠手工清单快照 + 显式恢复），故 attrib 栈在 core profile 下的
+ * 可用性不影响本类的恢复语义；第三方 attrib 泄漏的兜底与「深度不可读时降级 no-op」的留痕由
+ * {@code util.GlAttribDepth} 承担（warn-once，见该类 javadoc）。GL 自净审查 N13 的处置口径以此为准。</p>
+ *
  * <p>不覆盖的状态与理由：framebuffer 绑定、深度函数、CLEAR 值、纹理环境与混合方程等不在快照内，
  * 由帧内的离屏层（{@code UiRenderTarget} 进层时的全量 attrib 帧）与各组件自恢复；
  * 矩阵栈内容与 client 顶点数组状态亦不在此围栏职责内。改动本类的快照集合前请先读
  * {@code docs/历史报告/审查/2026-09-19-GL使用自净审查.md}。</p>
  */
 public final class UiFrameGlStateFence {
+
+    private static final Logger LOG = LogManager.getLogger("QzUILib/UiFrameGlStateFence");
     /** 可注入的最小 GL 状态访问面。 */
     interface GlAccess {
         void beginCapture();
@@ -114,6 +123,9 @@ public final class UiFrameGlStateFence {
     /** 捕获真实入口状态，并为 projection/modelview 各压入一个围栏帧。 */
     private void capture() {
         gl.beginCapture();
+        // 帧起点深度：帧末按量弹回，避免第三方（如 FFP 变体编译）在帧内多压的 attrib 帧跨帧累积。
+        // 两个宿主入口（HUD / 屏幕）因此同享同一套兜底；屏幕入口另有一层帧级兜底作双保险（R19）。
+        snapshot.attribDepth = club.heiqi.uilib.util.GlAttribDepth.current();
         snapshot.matrixMode = gl.getInteger(GL11.GL_MATRIX_MODE);
         snapshot.depthTest = gl.isEnabled(GL11.GL_DEPTH_TEST);
         snapshot.cullFace = gl.isEnabled(GL11.GL_CULL_FACE);
@@ -276,6 +288,8 @@ public final class UiFrameGlStateFence {
         } catch (Error restoreFailure) {
             failure = appendFailure(failure, restoreFailure);
         }
+        // attrib 栈深度兜底：即使上面的恢复有失败也要执行（popExcess 内部自降级、不重抛）。
+        club.heiqi.uilib.util.GlAttribDepth.popExcess(snapshot.attribDepth);
         if (failure != null) throwUnchecked(failure);
     }
 
@@ -342,6 +356,8 @@ public final class UiFrameGlStateFence {
         private boolean hasActiveTexture, hasProgram, hasVertexArray, hasBuffers;
         private boolean activeTexture2d, texture0Enabled;
         private int matrixMode;
+        /** capture 时的 attrib 栈深度：帧末按量弹出第三方在帧内泄漏的层级（R19）。 */
+        private int attribDepth = -1;
         private int blendSrcRgb, blendDstRgb, blendSrcAlpha, blendDstAlpha;
         private int stencilFunction, stencilReference, stencilValueMask, stencilWriteMask;
         private int stencilFail, stencilDepthFail, stencilDepthPass;
@@ -364,6 +380,9 @@ public final class UiFrameGlStateFence {
                 .order(ByteOrder.nativeOrder()).asFloatBuffer();
         private final ByteBuffer booleans = ByteBuffer.allocateDirect(16).order(ByteOrder.nativeOrder());
 
+        // 刻意不做 GL 查询式能力探测：core profile 下对已移除的栈参数查询会留下 GL 错误码，
+        // 而本仓有「入口 GL error 必须为空」的契约（历史见 ERROR-2026-07-14 记录：内层探测清掉外层错误）。
+        // 不可用的留痕改在 run() 的 capture 失败路径上做（见该类 run 方法）。
         @Override public void beginCapture() { }
         @Override public void beginRestore() { }
         @Override public boolean supportsActiveTexture() { return capabilities().OpenGL13; }

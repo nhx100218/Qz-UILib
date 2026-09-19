@@ -39,6 +39,9 @@ final class UiBackdropShaderProgram {
     static final String TAP_BUDGET_DEFINE = "UIB_TAP_BUDGET";
 
     /** 完整档程序：进程级唯一实例。 */
+    // 两个档位的实例是进程级单例：program 与 GL context 同寿命，随 context 销毁回收（UILib 不在 JVM 退出阶段
+    // 释放 GL，先例见 FontService.shutdown 的跳过分支）。失败路径的资源回收见 loadProgram 的 finally；
+    // 若将来引入 GL context 重建，必须在此加失效钩子（GL 自净审查 N8c / R19 同类缺口）。
     private static final UiBackdropShaderProgram FULL_BUDGET_PROGRAM =
             new UiBackdropShaderProgram(FULL_TAP_BUDGET);
 
@@ -251,25 +254,41 @@ final class UiBackdropShaderProgram {
     }
 
     private void loadProgram() {
-        int vertexShaderId = ShaderProgramSupport.compileShader(
-                ShaderProgramSupport.readText(getClass(), "shader/uiBackdropV.vert", "读取 UI backdrop 着色器失败: "),
-                GL20.GL_VERTEX_SHADER,
-                "UI backdrop 着色器编译失败: ");
-        // 顶点着色器与抽头预算无关；片元着色器注入 UIB_TAP_BUDGET 决定抽头段。
-        String fragmentSource = ShaderProgramSupport.readText(getClass(), "shader/uiBackdropF.frag",
-                "读取 UI backdrop 着色器失败: ");
-        int fragmentShaderId = ShaderProgramSupport.compileShader(
-                withTapBudgetDefine(fragmentSource, tapBudget),
-                GL20.GL_FRAGMENT_SHADER,
-                "UI backdrop 着色器编译失败: ");
+        int vertexShaderId = 0;
+        int fragmentShaderId = 0;
+        boolean linkedSuccessfully = false;
+        try {
+            vertexShaderId = ShaderProgramSupport.compileShader(
+                    ShaderProgramSupport.readText(getClass(), "shader/uiBackdropV.vert", "读取 UI backdrop 着色器失败: "),
+                    GL20.GL_VERTEX_SHADER,
+                    "UI backdrop 着色器编译失败: ");
+            // 顶点着色器与抽头预算无关；片元着色器注入 UIB_TAP_BUDGET 决定抽头段。
+            String fragmentSource = ShaderProgramSupport.readText(getClass(), "shader/uiBackdropF.frag",
+                    "读取 UI backdrop 着色器失败: ");
+            fragmentShaderId = ShaderProgramSupport.compileShader(
+                    withTapBudgetDefine(fragmentSource, tapBudget),
+                    GL20.GL_FRAGMENT_SHADER,
+                    "UI backdrop 着色器编译失败: ");
 
-        GL20.glAttachShader(shaderProgramId, vertexShaderId);
-        GL20.glAttachShader(shaderProgramId, fragmentShaderId);
-        ShaderProgramSupport.linkAndValidateProgram(shaderProgramId, "UI backdrop 着色器链接失败: ",
-                "UI backdrop 着色器验证失败: ");
-
-        GL20.glDeleteShader(vertexShaderId);
-        GL20.glDeleteShader(fragmentShaderId);
+            GL20.glAttachShader(shaderProgramId, vertexShaderId);
+            GL20.glAttachShader(shaderProgramId, fragmentShaderId);
+            ShaderProgramSupport.linkAndValidateProgram(shaderProgramId, "UI backdrop 着色器链接失败: ",
+                    "UI backdrop 着色器验证失败: ");
+            linkedSuccessfully = true;
+        } finally {
+            // 失败路径两个 shader 与 program 都必须回收：原先 frag 读取/编译失败会漏掉已编译的顶点 shader，
+            // 链接失败时 glDeleteShader 也不可达（GL 自净审查 N8）。写法对齐 FontShaderProgram.loadProgram。
+            if (vertexShaderId != 0) {
+                GL20.glDeleteShader(vertexShaderId);
+            }
+            if (fragmentShaderId != 0) {
+                GL20.glDeleteShader(fragmentShaderId);
+            }
+            if (!linkedSuccessfully && shaderProgramId != 0) {
+                GL20.glDeleteProgram(shaderProgramId);
+                shaderProgramId = 0;
+            }
+        }
     }
 
     private int getUniformLocation(String name) {

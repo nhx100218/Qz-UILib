@@ -112,35 +112,54 @@ public class FontRenderStateGuard implements FontRenderStateExecutor {
      */
     public void push(boolean includeMatrixState) {
         SavedState state = new SavedState(includeMatrixState);
-        gl.pushAttrib(GL11.GL_ALL_ATTRIB_BITS);
-        gl.pushClientAttrib(GL11.GL_CLIENT_PIXEL_STORE_BIT);
-        if (includeMatrixState) {
-            state.currentMatrixMode = gl.getInteger(GL11.GL_MATRIX_MODE);
-            pushMatrixStack(GL11.GL_MODELVIEW);
-            pushMatrixStack(GL11.GL_PROJECTION);
-            pushMatrixStack(GL11.GL_TEXTURE);
-        }
+        boolean attribPushed = false;
+        boolean clientAttribPushed = false;
+        int matrixStacksPushed = 0;
+        try {
+            gl.pushAttrib(GL11.GL_ALL_ATTRIB_BITS);
+            attribPushed = true;
+            gl.pushClientAttrib(GL11.GL_CLIENT_PIXEL_STORE_BIT);
+            clientAttribPushed = true;
+            if (includeMatrixState) {
+                state.currentMatrixMode = gl.getInteger(GL11.GL_MATRIX_MODE);
+                pushMatrixStack(GL11.GL_MODELVIEW);
+                matrixStacksPushed++;
+                pushMatrixStack(GL11.GL_PROJECTION);
+                matrixStacksPushed++;
+                pushMatrixStack(GL11.GL_TEXTURE);
+                matrixStacksPushed++;
+            }
 
-        state.activeTexture = gl.getInteger(GL13.GL_ACTIVE_TEXTURE);
-        state.currentProgram = gl.getInteger(GL20.GL_CURRENT_PROGRAM);
-        gl.activeTexture(GL13.GL_TEXTURE0);
-        state.textureBinding2DOnTexture0 = gl.getInteger(GL11.GL_TEXTURE_BINDING_2D);
-        state.texture2DEnabledOnTexture0 = gl.isEnabled(GL11.GL_TEXTURE_2D);
-        if (state.activeTexture != GL13.GL_TEXTURE0) {
+            state.activeTexture = gl.getInteger(GL13.GL_ACTIVE_TEXTURE);
+            state.currentProgram = gl.getInteger(GL20.GL_CURRENT_PROGRAM);
+            gl.activeTexture(GL13.GL_TEXTURE0);
+            state.textureBinding2DOnTexture0 = gl.getInteger(GL11.GL_TEXTURE_BINDING_2D);
+            state.texture2DEnabledOnTexture0 = gl.isEnabled(GL11.GL_TEXTURE_2D);
+            if (state.activeTexture != GL13.GL_TEXTURE0) {
+                gl.activeTexture(state.activeTexture);
+                state.textureBinding2DOnActiveTexture = gl.getInteger(GL11.GL_TEXTURE_BINDING_2D);
+                state.texture2DEnabledOnActiveTexture = gl.isEnabled(GL11.GL_TEXTURE_2D);
+            } else {
+                state.textureBinding2DOnActiveTexture = state.textureBinding2DOnTexture0;
+                state.texture2DEnabledOnActiveTexture = state.texture2DEnabledOnTexture0;
+            }
             gl.activeTexture(state.activeTexture);
-            state.textureBinding2DOnActiveTexture = gl.getInteger(GL11.GL_TEXTURE_BINDING_2D);
-            state.texture2DEnabledOnActiveTexture = gl.isEnabled(GL11.GL_TEXTURE_2D);
-        } else {
-            state.textureBinding2DOnActiveTexture = state.textureBinding2DOnTexture0;
-            state.texture2DEnabledOnActiveTexture = state.texture2DEnabledOnTexture0;
+            state.vertexArrayBinding = gl.getInteger(GL30.GL_VERTEX_ARRAY_BINDING);
+            state.arrayBufferBinding = gl.getInteger(GL15.GL_ARRAY_BUFFER_BINDING);
+            state.elementArrayBufferBinding = gl.getInteger(GL15.GL_ELEMENT_ARRAY_BUFFER_BINDING);
+            gl.readIntegers(GL11.GL_VIEWPORT, viewportScratch);
+            System.arraycopy(viewportScratch, 0, state.viewport, 0, state.viewport.length);
+            savedStates.push(state);
+        } catch (RuntimeException exception) {
+            rollbackPush(matrixStacksPushed, clientAttribPushed, attribPushed, state, exception);
+            throw exception;
+        } catch (LinkageError error) {
+            rollbackPush(matrixStacksPushed, clientAttribPushed, attribPushed, state, error);
+            throw error;
+        } catch (Error error) {
+            rollbackPush(matrixStacksPushed, clientAttribPushed, attribPushed, state, error);
+            throw error;
         }
-        gl.activeTexture(state.activeTexture);
-        state.vertexArrayBinding = gl.getInteger(GL30.GL_VERTEX_ARRAY_BINDING);
-        state.arrayBufferBinding = gl.getInteger(GL15.GL_ARRAY_BUFFER_BINDING);
-        state.elementArrayBufferBinding = gl.getInteger(GL15.GL_ELEMENT_ARRAY_BUFFER_BINDING);
-        gl.readIntegers(GL11.GL_VIEWPORT, viewportScratch);
-        System.arraycopy(viewportScratch, 0, state.viewport, 0, state.viewport.length);
-        savedStates.push(state);
     }
 
     /**
@@ -151,37 +170,51 @@ public class FontRenderStateGuard implements FontRenderStateExecutor {
             throw new IllegalStateException("字体渲染状态恢复缺少对应的保存边界");
         }
         SavedState state = savedStates.pop();
+        // 逐步恢复 + 失败累积：任一步抛异常都不能跳过后续（原实现 popAttrib 失败会让
+        // program/纹理/VAO/buffer/viewport 全部不还原且 attrib 栈失衡，GL 自净审查 N15）。
+        Throwable failure = null;
         if (state.matrixStateSaved) {
             // GL_TEXTURE 矩阵栈属于 active texture 单元。字体批次会切到 TEXTURE0，
             // 必须先回到 push 时的单元，否则 unit0 下溢而入口单元不断积累未弹出的矩阵。
-            gl.activeTexture(state.activeTexture);
-            popMatrixStack(GL11.GL_TEXTURE);
-            popMatrixStack(GL11.GL_PROJECTION);
-            popMatrixStack(GL11.GL_MODELVIEW);
-            gl.matrixMode(state.currentMatrixMode);
+            failure = recordFailure(failure, () -> gl.activeTexture(state.activeTexture));
+            failure = recordFailure(failure, () -> popMatrixStack(GL11.GL_TEXTURE));
+            failure = recordFailure(failure, () -> popMatrixStack(GL11.GL_PROJECTION));
+            failure = recordFailure(failure, () -> popMatrixStack(GL11.GL_MODELVIEW));
+            failure = recordFailure(failure, () -> gl.matrixMode(state.currentMatrixMode));
         }
-        gl.popClientAttrib();
-        gl.popAttrib();
+        failure = recordFailure(failure, () -> gl.popClientAttrib());
+        failure = recordFailure(failure, () -> gl.popAttrib());
         // 围堵第三方渲染路径（如 FFP 变体编译）在守卫区间内泄漏的 attrib 栈深度。
-        club.heiqi.uilib.util.GlAttribDepth.popExcess(state.attribDepthBeforePush);
+        final SavedState restored = state;
+        failure = recordFailure(failure, new Runnable() {
+            @Override
+            public void run() {
+                club.heiqi.uilib.util.GlAttribDepth.popExcess(restored.attribDepthBeforePush);
+            }
+        });
 
-        gl.useProgram(state.currentProgram);
-        gl.activeTexture(GL13.GL_TEXTURE0);
-        gl.bindTexture2d(state.textureBinding2DOnTexture0);
-        gl.setEnabled(GL11.GL_TEXTURE_2D, state.texture2DEnabledOnTexture0);
+        failure = recordFailure(failure, () -> gl.useProgram(state.currentProgram));
+        failure = recordFailure(failure, () -> gl.activeTexture(GL13.GL_TEXTURE0));
+        failure = recordFailure(failure, () -> gl.bindTexture2d(state.textureBinding2DOnTexture0));
+        failure = recordFailure(failure, () -> gl.setEnabled(GL11.GL_TEXTURE_2D, state.texture2DEnabledOnTexture0));
         if (state.activeTexture != GL13.GL_TEXTURE0) {
-            gl.activeTexture(state.activeTexture);
-            gl.bindTexture2d(state.textureBinding2DOnActiveTexture);
-            gl.setEnabled(GL11.GL_TEXTURE_2D, state.texture2DEnabledOnActiveTexture);
+            failure = recordFailure(failure, () -> gl.activeTexture(state.activeTexture));
+            failure = recordFailure(failure, () -> gl.bindTexture2d(state.textureBinding2DOnActiveTexture));
+            failure = recordFailure(failure,
+                    () -> gl.setEnabled(GL11.GL_TEXTURE_2D, state.texture2DEnabledOnActiveTexture));
         }
-        gl.activeTexture(state.activeTexture);
-        gl.bindVertexArray(state.vertexArrayBinding);
-        gl.bindBuffer(GL15.GL_ARRAY_BUFFER, state.arrayBufferBinding);
-        gl.bindBuffer(GL15.GL_ELEMENT_ARRAY_BUFFER, state.elementArrayBufferBinding);
+        failure = recordFailure(failure, () -> gl.activeTexture(state.activeTexture));
+        failure = recordFailure(failure, () -> gl.bindVertexArray(state.vertexArrayBinding));
+        failure = recordFailure(failure, () -> gl.bindBuffer(GL15.GL_ARRAY_BUFFER, state.arrayBufferBinding));
+        failure = recordFailure(failure, () -> gl.bindBuffer(GL15.GL_ELEMENT_ARRAY_BUFFER, state.elementArrayBufferBinding));
 
-        gl.viewport(state.viewport[0], state.viewport[1], state.viewport[2], state.viewport[3]);
+        failure = recordFailure(failure,
+                () -> gl.viewport(state.viewport[0], state.viewport[1], state.viewport[2], state.viewport[3]));
         if (state.matrixStateSaved) {
-            gl.matrixMode(state.currentMatrixMode);
+            failure = recordFailure(failure, () -> gl.matrixMode(state.currentMatrixMode));
+        }
+        if (failure != null) {
+            throwUnchecked(failure);
         }
     }
 
@@ -219,6 +252,78 @@ public class FontRenderStateGuard implements FontRenderStateExecutor {
     private void pushMatrixStack(int matrixMode) {
         gl.matrixMode(matrixMode);
         gl.pushMatrix();
+    }
+
+    /** push 中途失败时回滚已压入的 attrib / client attrib / 矩阵栈；回滚失败优先抛出，压入失败作为 suppressed 保留。 */
+    private void rollbackPush(int matrixStacksPushed, boolean clientAttribPushed, boolean attribPushed,
+            SavedState state, Throwable pushFailure) {
+        Throwable rollbackFailure = null;
+        // 逐步累积：任一步弹栈失败都不能跳过后续——否则矩阵栈会残留多层帧，
+        // 与 UiFrameGlStateFence.rollbackCaptureMatrices 的逐项写法对齐（独立复核 C 项）。
+        if (matrixStacksPushed >= 3) {
+            rollbackFailure = recordFailure(rollbackFailure, () -> popMatrixStack(GL11.GL_TEXTURE));
+        }
+        if (matrixStacksPushed >= 2) {
+            rollbackFailure = recordFailure(rollbackFailure, () -> popMatrixStack(GL11.GL_PROJECTION));
+        }
+        if (matrixStacksPushed >= 1) {
+            final int matrixModeToRestore = state.currentMatrixMode;
+            rollbackFailure = recordFailure(rollbackFailure, () -> popMatrixStack(GL11.GL_MODELVIEW));
+            rollbackFailure = recordFailure(rollbackFailure, () -> gl.matrixMode(matrixModeToRestore));
+        }
+        try {
+            if (clientAttribPushed) {
+                gl.popClientAttrib();
+            }
+        } catch (RuntimeException exception) {
+            rollbackFailure = appendFailure(rollbackFailure, exception);
+        } catch (LinkageError error) {
+            rollbackFailure = appendFailure(rollbackFailure, error);
+        }
+        try {
+            if (attribPushed) {
+                gl.popAttrib();
+            }
+        } catch (RuntimeException exception) {
+            rollbackFailure = appendFailure(rollbackFailure, exception);
+        } catch (LinkageError error) {
+            rollbackFailure = appendFailure(rollbackFailure, error);
+        }
+        if (rollbackFailure != null) {
+            rollbackFailure.addSuppressed(pushFailure);
+            throwUnchecked(rollbackFailure);
+        }
+        throwUnchecked(pushFailure);
+    }
+
+    /** 执行一步恢复并累积失败（不中断后续步骤）。 */
+    private static Throwable recordFailure(Throwable failure, Runnable step) {
+        try {
+            step.run();
+        } catch (RuntimeException exception) {
+            return appendFailure(failure, exception);
+        } catch (LinkageError error) {
+            return appendFailure(failure, error);
+        }
+        return failure;
+    }
+
+    private static Throwable appendFailure(Throwable primary, Throwable additional) {
+        if (primary == null) {
+            return additional;
+        }
+        primary.addSuppressed(additional);
+        return primary;
+    }
+
+    private static void throwUnchecked(Throwable failure) {
+        if (failure instanceof RuntimeException) {
+            throw (RuntimeException) failure;
+        }
+        if (failure instanceof Error) {
+            throw (Error) failure;
+        }
+        throw new RuntimeException(failure);
     }
 
     private void popMatrixStack(int matrixMode) {
