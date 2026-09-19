@@ -304,6 +304,12 @@ public final class HeadlessShotMain {
             System.out.println("[headless] 提示：config 页不接收 --theme —— 主题对配置页是配置内容"
                     + "（页壳树构建前安装自己的偏好信号），不是请求级环境量；该参数对 config 档无效");
         }
+        if (themeGiven && pageNameTargets.contains(HeadlessRequest.CHAT_INPUT_PAGE)) {
+            // 与 config 页同款「收下不接线」风险：输入屏在自己的构造里建树，页内没有主题安装时机
+            // （独立审查实测四档主题产物逐字节相同）。显式提示而不是静默忽略 —— 本仓通例。
+            System.out.println("[headless] 提示：chat-input 页不接收 --theme —— 输入屏在构造期建树、"
+                    + "页内无主题安装时机（SceneThemes 必须在建树前安装）；该参数对 chat-input 档无效");
+        }
 
         int total = pageNameTargets.size() * pageTargets.size() * sizeTargets.size()
                 * fontScaleTargets.size() * themeTargets.size() * backdropQualityTargets.size();
@@ -592,7 +598,7 @@ public final class HeadlessShotMain {
     }
 
     /**
-     * 页面的默认文本：聊天系页面（chat / hud）未显式给 {@code --text} 时用演示消息集
+     * 页面的默认文本：聊天系页面（chat / chat-input / hud）未显式给 {@code --text} 时用演示消息集
      * （省得每次出图都拼长参数串）。
      *
      * <p>按页计算而非全局替换：多页面轴下一次调用会同时出多个页面，全局替换会把聊天页的演示消息集
@@ -603,7 +609,8 @@ public final class HeadlessShotMain {
      * @return 该页实际使用的文本
      */
     private static String defaultTextFor(String page, String text) {
-        if (HeadlessRequest.CHAT_PAGE.equals(page) || HeadlessRequest.HUD_PAGE.equals(page)) {
+        if (HeadlessRequest.CHAT_PAGE.equals(page) || HeadlessRequest.HUD_PAGE.equals(page)
+                || HeadlessRequest.CHAT_INPUT_PAGE.equals(page)) {
             return HeadlessRequest.DEFAULT_PROBE_TEXT.equals(text) ? HeadlessRequest.CHAT_DEFAULT_TEXT : text;
         }
         return text;
@@ -622,7 +629,7 @@ public final class HeadlessShotMain {
      */
     private static int defaultFramesFor(String page, int frames, boolean framesGiven) {
         if (!framesGiven && (HeadlessRequest.CHAT_PAGE.equals(page) || HeadlessRequest.HUD_PAGE.equals(page)
-                || HeadlessRequest.CONFIG_PAGE.equals(page))) {
+                || HeadlessRequest.CHAT_INPUT_PAGE.equals(page) || HeadlessRequest.CONFIG_PAGE.equals(page))) {
             return 20;
         }
         return frames;
@@ -833,7 +840,7 @@ public final class HeadlessShotMain {
         String missingType = missingTypeOf(unexpected);
         if (missingType != null) {
             System.err.println("[headless] CLASSPATH-INSUFFICIENT：当前类路径缺少类型 " + missingType);
-            System.err.println("[headless] 处置：若该页面触及 Minecraft 类型（chat / hud），"
+            System.err.println("[headless] 处置：若该页面触及 Minecraft 类型（chat / chat-input / hud），"
                     + "换用完整开发类路径启动器 build\\headless\\qz-shot-full.bat（Linux/macOS 为 .sh）；"
                     + "否则检查 exportHeadlessClasspath 的导出是否完整");
             System.err.println("[headless] cause: " + unexpected.getClass().getName() + ": "
@@ -905,7 +912,7 @@ public final class HeadlessShotMain {
     }
 
     private static void printUsage(PrintStream out) {
-        out.println("用法: HeadlessShotMain [--page=playground|text-probe|chat|hud|config|glass|picker |"
+        out.println("用法: HeadlessShotMain [--page=playground|text-probe|chat|chat-input|hud|config|glass|picker |"
                 + " --pages=NAME,NAME,…] [--page-index=N | --page-indexes=N,N,…]"
                 + " [--size=WxH | --sizes=WxH,WxH,…] [--out=path] [--frames=N] [--settle=N] [--max-frames=N]"
                 + " [--bg=RRGGBB|transparent] [--text=…] [--actions=\"…\"|--script=file]"
@@ -918,7 +925,7 @@ public final class HeadlessShotMain {
         out.println("主题档: " + HeadlessThemes.names() + "（不给 = 各页面用自己的默认外观）");
         out.println("目标寻址: --nodes 打印可命中节点（--nodes=all 打印完整树）；--find=TEXT 按可见文本找节点"
                 + "（给出地址与中心点）；--center=r0/3/1 解地址取中心点。三者都先推进一帧拿布局，不产出 PNG");
-        out.println("页面: playground / text-probe / chat / hud / config / glass / picker；--pages 给多页面矩阵，"
+        out.println("页面: playground / text-probe / chat / chat-input / hud / config / glass / picker；--pages 给多页面矩阵，"
                 + "--page-index 的含义随页面而变（playground = 演示页下标，hud = 锚点，config = section 下标，"
                 + "picker = 演示状态 0 全部/1 过滤/2 空态，chat/text-probe/glass 忽略）");
         out.println("glass 页：磨玻璃实验室（backdrop-filter 观感验收）；诊断卡上的「backdrop 路径」是本帧实际走的"

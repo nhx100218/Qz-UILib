@@ -37,9 +37,9 @@ GL 上下文需要窗口句柄，而 LWJGL2 的 `Display.create()` 会创建**�
 
 | 参数 | 说明 |
 |---|---|
-| `--page=A\|B\|…` | 单页面；`playground` = 测试场地，`text-probe` = 单行文本探针，`chat` = 聊天 3.0 内容树，`hud` = 同一内容树走 HUD 宿主装配，`config` = 生产配置页，`glass` = 磨玻璃实验室（backdrop-filter 观感验收），`picker` = 搜索选择器（控件级，见下节） |
+| `--page=A\|B\|…` | 单页面；`playground` = 测试场地，`text-probe` = 单行文本探针，`chat` = 聊天 3.0 内容树，`chat-input` = 聊天**输入屏**形态（生产 `ChatInputSurface`，见下节），`hud` = 同一内容树走 HUD 宿主装配，`config` = 生产配置页，`glass` = 磨玻璃实验室（backdrop-filter 观感验收），`picker` = 搜索选择器（控件级，见下节） |
 | `--pages=A,B,…` | **多页面矩阵**（与尺寸 / 外观 / 字号轴同构）；与 `--page` 同时给出时本参数胜 |
-| `--page-index=N` / `--page-indexes=0,1,…` | `playground` 子页下标（0 总览 / 1 单行文本 / 2 多行文本 / 3 浮层 / 4 响应式 / 5 富文本 / 6 控制字符 / 7 LaTeX / 8 Markdown）；`hud` 页当作**锚点**（0 左上 / 1 右上 / 2 左下 / 3 右下），`config` 页当作 **section 下标**，`picker` 页当作**演示状态**（0 全部 / 1 过滤 / 2 空态），`chat` / `text-probe` / `glass` 忽略 |
+| `--page-index=N` / `--page-indexes=0,1,…` | `playground` 子页下标（0 总览 / 1 单行文本 / 2 多行文本 / 3 浮层 / 4 响应式 / 5 富文本 / 6 控制字符 / 7 LaTeX / 8 Markdown）；`hud` 页当作**锚点**（0 左上 / 1 右上 / 2 左下 / 3 右下），`config` 页当作 **section 下标**，`picker` 页当作**演示状态**（0 全部 / 1 过滤 / 2 空态），`chat-input` 页**忽略**该参数，`chat` / `text-probe` / `glass` 忽略 |
 | `--size=WxH` / `--sizes=WxH,…` | 单档 / 分辨率矩阵（360P~2K 任意尺寸，渲染到自建 FBO，与窗口无关） |
 | `--out=path` | 输出 PNG；矩阵出图时按轴追加后缀：`-pg<页面名>`（多页面时）/ `-p<下标>` / `-th<外观档>` / `-bq<玻璃档>` / `-fs<百分比>` / `-WxH`。各段在**整体为批量**时按「该轴是否给出 / 是否偏离缺省」进入；**尺寸段恒进**（同一页面不同尺寸没有「缺省尺寸」可言），字号段只在非 100 时进 |
 | `--actions="…"` / `--script=file` | 输入脚本（见下） |
@@ -285,7 +285,8 @@ build\headless\qz-shot.bat --page=hud --size=1920x1080 --debug
 | 页面 | 换档效果 | 原因 |
 |---|---|---|
 | `playground` | **变色**（默认 vs 浅色档 685824/921600 像素不同） | 外壳与 9 个演示页都经 `SceneThemes` 取配方 |
-| `chat` / `hud` | **逐像素相同**（实测 0/921600） | chat3 的 HUD 形态配色来自它自己的进程级色板 `ChatMarkdownSettings`（气泡底/正文/组头…），不读 runtime 默认主题；只有容器形态（输入屏打开时）走 `SceneThemes` |
+| `chat` / `hud` | **逐像素相同**（实测 0/921600） | chat3 的 HUD 形态配色来自它自己的进程级色板 `ChatMarkdownSettings`（气泡底/正文/组头…），不读 runtime 默认主题 |
+| `chat-input` | **无效**（不接收，命令层会显式提示） | 输入屏在自己的构造里建树，页内没有主题安装时机（`SceneThemes` 必须在建树前安装）；实测四档主题产物逐字节相同 |
 | `text-probe` | 无效 | 前景色写死，连安装都不做 |
 | `config` | **无效**（不接收） | 配置页在页壳树构建前安装自己的偏好信号（`ConfigThemePreference`，默认平面档）——主题对它是**配置内容**而非请求级环境量 |
 | `picker` | **变色**（实测 dark colors=1410 / light colors=847；字节 356569 / 240753） | 面板表面经主题配方派生（PANEL / OVERLAY / GROUP 等角色） |
@@ -342,6 +343,26 @@ build\headless\qz-shot.bat --page=chat --text="Steve:**粗体** 与 `code`;;md:#
 **必须用完整集启动器**（`qz-shot-full.bat`）：chat3 内容树在方法体里使用 `net.minecraft.*`（`IChatComponent` 等），
 最小集类路径下装配会抛 `NoClassDefFoundError`，进程以**退出码 6**（`CLASSPATH-INSUFFICIENT`）收场并给出换启动器的指引。
 `hud` 页同理。
+
+### 聊天输入屏（chat-input）
+
+`--page=chat-input` 装配**生产** `ChatInputSurface`（`ChatInputScreen` 的渲染面）：滚轮滚动历史、
+Shift 降为单行、拖选与点击行都挂在这一层，`--page=chat` 的内容树形态看不到它们。
+
+```bat
+build\headless\qz-shot-full.bat --page=chat-input --size=1280x720 --out=out\chat-input.png
+:: Shift+滚轮：先按住再滚
+build\headless\qz-shot-full.bat --page=chat-input --size=1280x720 ^
+  --actions="move 170 500; frame; keydown SHIFT_LEFT; frame; scroll 10; wait 6" --out=out\ci-shift.png
+```
+
+读数 `[headless] scroll: offset=N max=M visible=K`：`offset` = 自底部向上的偏移行数（0 = 停在最新）、
+`max` = 偏移上限、`visible` = 当前可视行数。非 Shift 滚轮按 ×7 行、Shift 按 ×1 行（原版语义；
+实测 `scroll 10` ⇒ `offset=7`、加 Shift ⇒ `offset=1`）。**需要完整集启动器**（该页触及 `net.minecraft.*`）。
+
+对拍请用读数而不是像素：本页 render 用**墙钟**驱动开合动画（生产语义，未接入出图设施的虚拟帧时钟），
+默认设置下像素实测 7/7 逐字节相同，但**帧上限内未收敛时相位会漏进像素**（`--frames=1 --max-frames=1`
+三次三种哈希）。
 
 两点注意：
 

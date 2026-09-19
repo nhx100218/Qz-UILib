@@ -1777,7 +1777,7 @@ try/finally + 还原逐字节校验）：① 撤销宿主端口（回到 `System
 - **最小集可达、本轮已覆盖**：playground 单行文本页（`--page-index=1`）与多行文本页
   （`--page-index=2`）的 Shift+点击扩展选区；
 - **仅完整 classpath 可达、未覆盖**：`ChatInputSurface` 的 Shift+滚轮（chat 容器形态；headless 的
-  `--page=chat` 是 HUD 形态）；
+  `--page=chat` 是 HUD 形态）—— **已由 F51 覆盖**（`--page=chat-input`，见下）；
 - **同族但未覆盖（下一轮候选）**：`keydown` / `keyup` 的**页面级**行为（设备层已覆盖）；
   `dblclick` / `cancel` 的页面级行为已由 F49 覆盖。
 
@@ -1870,7 +1870,8 @@ oracle，粒度由**同逻辑行、不同词**的另一个落点（310）钉住 
   （词首 / 词尾 off-by-one 只要两点一致就不会红）—— 那一层由控件层 `assertParts` 单元判据承担；
 - **同族但未覆盖（下一轮候选）**：`keydown` / `keyup` 的**页面级**行为（设备层已覆盖，F48 登记）；
   `--script=file`（F44 登记）；picker 的成员带 / 候选源 SPI / 分类导航 / 密度档（F41 登记）；
-- **仅完整 classpath 可达、未覆盖**：`ChatInputSurface` 的 Shift+滚轮（F48 登记，chat 容器形态）。
+- **仅完整 classpath 可达、未覆盖**：`ChatInputSurface` 的 Shift+滚轮（F48 登记，chat 容器形态）
+  —— **已由 F51 覆盖**（`--page=chat-input` + `scroll:` 读数判据，见下）。
 
 **顺带实测到一条设施性质**：**收尾空帧数不改变产物** —— `click` 后 `wait 6` 与 `wait 12` 同摘要
 （`c441f3db8f2d`）、`cancel` 后 `wait 9` 与 `wait 15` 同摘要（`12b3305e2f9d`）。即插入符闪烁相位
@@ -1956,6 +1957,78 @@ class，还原源码后直接跑 `qz-shot.bat` 量到的还是变异产物。必
   且排除「固定 N 帧」实现），「连续 N 帧一致」这一条本身没有独立判据；
 - 轴组合的**笛卡尔积**未穷举（`--pages` × `--sizes` × `--themes` 的全组合未测）；
 - `--probe` / `--help` 仍未覆盖（下一轮候选）。
+
+### F51 聊天输入屏形态纳入 headless：Shift+滚轮端到端（2026-09-19）
+
+**动机（覆盖缺口，按实测口径写）**：F48 边界登记把「`ChatInputSurface` 的 Shift+滚轮」列为「仅完整
+classpath 可达、未覆盖」。已有的两层判据**都不验证真实事件链**：换算层 `ChatInputSurfaceTest` 只调静态
+函数 `wheelScrollLines(120, true) == 1`；路由层 `ChatMarkdownTableConsumerTest` 用**源码文本断言**钉住
+`wheelScrollLines(event.getWheelDelta(), event.isShiftDown())` 这一行字符串（改 false 会让它红，但那只
+证明源码里有这行字）。缺的是**端到端整链**：修饰位真的穿过脚本设备 → router → 控件，滚轮真的改动了历史
+偏移。此前 headless 的 `--page=chat` 是**内容树（HUD 形态）**，滚轮路由挂在输入屏那一层，内容树形态
+看不到它 —— 这也是本页存在的理由。
+
+**修法（复用生产装配，不复制路由）**：
+- `ChatInputSurface` 加**输入源注入构造**（`ChatInputSurface(String, PlatformInputSource)`）：真机默认仍走
+  `LwjglStateReader`，headless 注入脚本设备；`render` 里的倍率下发加 `instanceof ChatScaledInputSource`
+  守卫（注入源本身就是逻辑坐标）。**不复制滚轮路由** —— 复制件不受生产回归保护，判据会变成自证。
+- 新增页面 `--page=chat-input`：装配生产 `ChatInputSurface`（消息经 `ChatHudWindow.ensureRegistered()`
+  注入，与 chat / hud 页同一份到达节奏）。
+- 新增读数 `scroll: offset=N max=M visible=K`（`ChatHistory.getScroll()` / `getMaxScrollOffset()` /
+  `visibleLineCount()`）。
+
+**为什么判据用读数而不是像素**：`ChatInputSurface.render` 用 `System.currentTimeMillis()` 驱动开合动画
+（生产语义，**未接入 F47 的虚拟帧时钟**）。默认设置下本页像素实测 **7/7 逐字节相同**（开合动画在收敛窗口内
+已结束），但**帧上限内未收敛时相位会漏进像素**（`--frames=1 --max-frames=1` 三次三种哈希）—— 读数才是
+与相位无关的语义面，故判据钉读数。
+
+**实测（1280x720、完整集、16 条消息 ⇒ `max=11 visible=20`）**：
+
+| 脚本（指针 `move 170 500`） | `offset` |
+|---|---|
+| 无脚本（基线） | 0 |
+| `scroll 10` | **7**（`clamp(±1)` × `scrollWheelLines`=7） |
+| `keydown SHIFT_LEFT` → `scroll 10` | **1**（Shift ×1） |
+| `scroll 10` → `scroll -10` | 0（回最新） |
+
+**门禁**：`HeadlessPageLinkageTest.chatInputScrollHonoursShiftModifier`（**4 次出图**、本机实测 16.1~18.8 s，
+走完整集 `renderFull`；完整集缺失时 Assume 跳过）。断言：基线 offset=0；**`max >= 7` 前置断言**；
+非 Shift=7；Shift=1；反空跑（两者必须不同）；反方向回底=0。
+
+`max >= 7` 的**真实作用**（独立审查用变异实测订正）：它**不是**「防静默」闸门 —— 内容不足（2 条消息）
+时三条脚本读数全为 0，`offset == 7` 断言照样会红，只是失败消息指向「非 Shift 必须 ×7」而**误导**。
+它的价值是两条：①**诊断**（把误导性失败换成「内容必须够长」）；②**防读数接线漂移**（若 `describe()`
+读到的不是页内那个控制器，读数会是 0/0/0，该断言给出可定位的消息）。
+
+**变异（Lead，各自独立脚本 + try/finally + 还原 sha256 校验）**：
+
+| 变异 | 判据结果 |
+|---|---|
+| ① Shift 分支失效（`if (!shiftDown)` → `if (true)`） | **红**（「Shift 必须降为 ×1 行」） |
+| ② 幅度 clamp 去掉（`wheel = wheelDelta`） | **红**（「非 Shift 必须 ×7 行」） |
+| ③ `history().scrollBy(wheel)` 去掉 | **红**（「非 Shift 必须 ×7 行」） |
+
+**变异流程两点如实记录**：① 脚本的 `diffstat_same` 自检在**文档并行编辑**期间会读到 `false`（源码还原
+本身由逐文件 sha256 校验保证，审查者按同口径独立重跑三组后三者全部一致）；② **变异后必须重编译再出图** ——
+独立审查第一次做主题探针就踩到这条（源码已还原但 `build/classes` 里仍是变异 class，直启报
+`ClassCastException: HeadlessInputSource cannot be cast to ChatScaledInputSource`，exit=3）。
+
+**边界（如实登记）**：
+- 本页**未接入** F47 的虚拟帧时钟（生产 render 用墙钟驱动开合动画）⇒ 像素产物不参与判据；
+- 本页**不接收 `--theme`**：输入屏在自己的构造里建树，页内没有主题安装时机（`SceneThemes` 必须在建树前
+  安装）。命令层已比照 config 页**显式提示**而不是静默忽略（独立审查实测四档主题产物逐字节相同）；
+- 覆盖的是**滚轮路由 + 修饰键幅度**；拖选 / 点击行 / 编辑态下「滚轮不穿透」（`editing` 分支）未覆盖；
+- `ChatInputSurface` 的输入源注入构造是**生产代码改动**（依赖注入）：真机路径行为不变 —— 默认构造仍走
+  `LwjglStateReader`，`ChatInputScreen` 仍用默认构造，`inputSource` 是 `protected final` 且全仓只有一处
+  赋值（类为 final），故真机上守卫恒真（独立审查逐条核对 + 去掉守卫的 M6 反证：直启即
+  `ClassCastException`）；
+- **下一轮候选（独立审查建议，本轮未做）**：① 读数取自全局单例 `ChatHudWindow.ensureRegistered()`
+  （`describe()` 在 `session.close()` 之前调用，实测取到的就是页内那个控制器）；页面若改用自己的控制器，
+  读数会静默变成 0/0/0 —— 宜由 `HostBinding` 带一个 summary 供给器；② `render` 的倍率下发用
+  `instanceof ChatScaledInputSource` 守卫：今天等价且承重，但「预期外的注入源」会从响亮失败降级为静默
+  不下发倍率 —— 宜定义 `ScaleAwareInputSource` 能力接口（与 `KeyboardTextInputSource` 等同款做法）；
+- 该页需要**完整集** classpath（`ChatInputSurface` 触及 `net.minecraft.*`），与 chat / hud 同侧
+  （最小集下 exit 6 并给出换启动器指引，提示文案已补 chat-input）。
 
 ## 三、目标形态
 

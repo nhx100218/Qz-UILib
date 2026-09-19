@@ -16,6 +16,9 @@ import club.heiqi.config.ui.ConfigScreen;
 import club.heiqi.uilib.config.modern.ModernConfigAssembly;
 import club.heiqi.uilib.config.modern.QzUiLibModernSchema;
 import club.heiqi.uilib.font.config.FontConfig;
+import club.heiqi.uilib.internal.chat3.input.ChatInputSurface;
+import club.heiqi.uilib.internal.chat3.view.ChatHudWindow;
+import club.heiqi.uilib.internal.chat3.view.ChatSceneController;
 import club.heiqi.uilib.internal.devtools.glass.GlassLabHost;
 import club.heiqi.uilib.internal.devtools.playground.TestPlaygroundHost;
 import club.heiqi.uilib.ui.diagnostic.UiPerformanceMonitor;
@@ -187,8 +190,9 @@ public final class HeadlessSession implements AutoCloseable {
      * 页面来源：把页面标识映射为宿主。
      *
      * <p>当前提供 {@code playground}（测试场地首页）、{@code text-probe}（单行文本）、
-     * {@code chat}（chat3 内容树）、{@code hud}（HUD 宿主装配：外壳 + 锚定放置）、
-     * {@code config}（配置页，{@code pageIndex} = section 下标，见 {@link #createConfigHost}）与
+     * {@code chat}（chat3 内容树）、{@code chat-input}（聊天输入屏形态：生产 {@code ChatInputSurface}）、
+     * {@code hud}（HUD 宿主装配：外壳 + 锚定放置）、{@code config}（配置页，{@code pageIndex} = section
+     * 下标，见 {@link #createConfigHost}）、{@code picker}（搜索选择器控件级装配）与
      * {@code glass}（磨玻璃实验室，backdrop-filter 观感验收页）；
      * 后续页面在此登记，不允许调用方自行 new 宿主绕过会话生命周期。</p>
      *
@@ -229,6 +233,18 @@ public final class HeadlessSession implements AutoCloseable {
             return new HostBinding(chatProbe, chatProbe.runtime());
         }
 
+        if (HeadlessRequest.CHAT_INPUT_PAGE.equals(request.pageId())) {
+            // 输入屏形态：装配**生产** ChatInputSurface（滚轮 / 拖选 / 点击路由都在它里面），
+            // 只把输入源换成脚本设备 —— 复制一份路由做判据不在选项内（复制件不受生产回归保护）。
+            ChatSceneController chatInputController = ChatHudWindow.ensureRegistered();
+            chatInputController.setHostViewport(request.width(), request.height());
+            ChatSceneProbeHost.appendWithArrivalCadence(chatInputController,
+                    ChatSceneProbeHost.splitMessages(request.text()), request.clockMillis());
+            chatInputController.notifyDataChanged();
+            ChatInputSurface chatInput = new ChatInputSurface("", inputSource);
+            return new HostBinding(chatInput, chatInput.runtime());
+        }
+
         if (HeadlessRequest.HUD_PAGE.equals(request.pageId())) {
             HudSceneProbeHost hudProbe = new HudSceneProbeHost(request.width(), request.height(),
                     ChatSceneProbeHost.splitMessages(request.text()), request.pageIndex(),
@@ -257,7 +273,7 @@ public final class HeadlessSession implements AutoCloseable {
 
         throw new HeadlessFailure(HeadlessFailure.Stage.CAPABILITY,
                 "未知页面：" + request.pageId()
-                        + "（当前提供 playground / text-probe / chat / hud / config / glass / picker）");
+                        + "（当前提供 playground / text-probe / chat / chat-input / hud / config / glass / picker）");
     }
 
     /**

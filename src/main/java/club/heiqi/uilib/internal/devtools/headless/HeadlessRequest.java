@@ -46,6 +46,18 @@ public final class HeadlessRequest {
     /** 聊天页面标识：经生产内容构建入口渲染 chat3 内容树（气泡 / markdown / 公式 / 链接）。 */
     public static final String CHAT_PAGE = "chat";
     /**
+     * 聊天**输入屏**形态标识：装配生产 {@code ChatInputSurface}（{@code ChatInputScreen} 的渲染面）。
+     *
+     * <p>与 {@link #CHAT_PAGE} 的差别：那一页只渲染**内容树**（HUD 形态），本页装配的是输入屏 ——
+     * 滚轮滚动历史（Shift 降为单行）、拖选、点击行等交互都挂在这一层，内容树形态看不到它们
+     * （F48 边界登记为「仅完整 classpath 可达、未覆盖」）。</p>
+     *
+     * <p>输入源注入：生产构造默认走 {@code LwjglStateReader}（真机），本页注入 headless 脚本设备，
+     * 但**路由与控件行为仍是生产那一份**（不复制）。像素产物受开合动画相位影响（生产 render 取墙钟），
+     * 故本页判据以 {@code scroll:} 读数为准。</p>
+     */
+    public static final String CHAT_INPUT_PAGE = "chat-input";
+    /**
      * HUD 页面标识：同一份聊天内容树走生产 HUD 宿主装配（{@code SceneHostWindow}：外壳 + 锚定放置）。
      *
      * <p>与 {@link #CHAT_PAGE} 的差别只有宿主装配——用于对照「同一份内容代码，换宿主」的观感，

@@ -2,6 +2,9 @@ package club.heiqi.uilib.internal.devtools.headless;
 
 import java.nio.file.Path;
 
+import club.heiqi.uilib.internal.chat3.view.ChatHudWindow;
+import club.heiqi.uilib.internal.chat3.view.ChatSceneController;
+
 /**
  * 一次出图的产物：像素文件 + 自检 + 命令面摘要 + 能力快照 + 耗时。
  *
@@ -130,6 +133,13 @@ public final class HeadlessArtifact {
             sb.append("（达到帧上限仍未收敛：检查是否有持续变化的动画/时间源）");
         }
         sb.append('\n');
+        if (HeadlessRequest.CHAT_INPUT_PAGE.equals(request.pageId())) {
+            // 输入屏形态的读数：像素产物受开合动画相位影响（生产 render 取墙钟），滚动语义只能靠读数钉。
+            ChatSceneController controller = ChatHudWindow.ensureRegistered();
+            sb.append("[headless] scroll: offset=").append(controller.history().getScroll())
+                    .append(" max=").append(controller.history().getMaxScrollOffset())
+                    .append(" visible=").append(controller.visibleLineCount()).append('\n');
+        }
         if (performanceSummary != null) {
             sb.append("[headless] perf: ").append(performanceSummary).append('\n');
         }

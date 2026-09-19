@@ -36,6 +36,7 @@ import club.heiqi.uilib.ui.scene.host.AbstractSceneHostWidget;
 import club.heiqi.uilib.ui.scene.host.lwjgl.LwjglInputSource;
 import club.heiqi.uilib.ui.scene.host.lwjgl.LwjglStateReader;
 import club.heiqi.uilib.ui.scene.control.SceneDialog;
+import club.heiqi.uilib.ui.scene.input.PlatformInputSource;
 import club.heiqi.uilib.ui.scene.input.SceneEvent;
 import club.heiqi.uilib.ui.scene.input.SceneEventContext;
 import club.heiqi.uilib.ui.scene.input.SceneEventType;
@@ -113,7 +114,20 @@ public final class ChatInputSurface extends AbstractSceneHostWidget
     private float frameScale = 1F;
 
     public ChatInputSurface(String initialText) {
-        super(new ChatScaledInputSource(new LwjglStateReader()));
+        this(initialText, new ChatScaledInputSource(new LwjglStateReader()));
+    }
+
+    /**
+     * 注入输入源的构造（headless 出图设施用）：滚轮 / 拖选 / 点击的路由与控件行为仍是**生产那一份**，
+     * 出图设施只替换「状态从哪来」—— 真机走 {@link LwjglStateReader}，headless 注入脚本设备。
+     *
+     * <p>为什么不给 headless 复制一份路由：复制出来的那条不受生产回归保护，判据会变成自证。</p>
+     *
+     * @param initialText 预填文本
+     * @param inputSource 平台输入源（headless 注入的是逻辑坐标源，无需倍率换算）
+     */
+    public ChatInputSurface(String initialText, PlatformInputSource inputSource) {
+        super(inputSource);
         // 宿主负责启用并逐帧采样动画：玻璃按钮过渡与 tooltip 延时共用标准帧管线。
         runtime.__enableMotion();
         this.controller = ChatHudWindow.ensureRegistered();
@@ -225,7 +239,10 @@ public final class ChatInputSurface extends AbstractSceneHostWidget
     public void render(int w, int h, UiRenderBackend ctx, int absX, int absY) {
         // 倍率真值 = 统一缩放状态(宿主/打开态/编辑预览同源);工具栏层只负责装配,不承载倍率。
         frameScale = unifiedScaleFactor();
-        ((ChatScaledInputSource) inputSource).setScale(frameScale);
+        // 倍率只对真机路径的输入源有意义（它把物理坐标换算成逻辑坐标）；注入源本身就是逻辑坐标。
+        if (inputSource instanceof ChatScaledInputSource) {
+            ((ChatScaledInputSource) inputSource).setScale(frameScale);
+        }
         hostWidth = Math.max(1, w);
         hostHeight = Math.max(1, h);
         applyPlacement(hostWidth, hostHeight);

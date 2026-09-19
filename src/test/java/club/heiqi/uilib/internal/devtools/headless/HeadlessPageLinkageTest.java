@@ -62,6 +62,7 @@ public class HeadlessPageLinkageTest {
     private static final Pattern SEARCH_RESULTS = Pattern.compile("Search results \\((\\d+)\\)");
     private static final Pattern NODE_LINE = Pattern.compile("(r[0-9/]+) SceneNode(?: \"[^\"]*\")? @\\d+,(-?\\d+)");
     private static final Pattern FRAMES_PLAN = Pattern.compile("frames: (\\d+)/(\\d+)");
+    private static final Pattern SCROLL_STATE = Pattern.compile("scroll: offset=(\\d+) max=(\\d+) visible=(\\d+)");
     private static final String TEMP_DIR_PREFIX = "qz-headless-config-";
 
     /** 配置页在最小集上必须真的出图（本轮回归的守卫）。 */
@@ -884,6 +885,68 @@ public class HeadlessPageLinkageTest {
         } finally {
             Files.deleteIfExists(scriptFile);
         }
+    }
+
+    /**
+     * 聊天**输入屏**形态的滚轮端到端判据：{@code ChatInputSurface} 的 SCROLL 路由真的驱动历史滚动，
+     * 且 Shift 把幅度从「×7 行」降为「×1 行」（原版语义）。
+     *
+     * <p>守的交付：F48 边界登记把「{@code ChatInputSurface} 的 Shift+滚轮」列为「仅完整 classpath 可达、
+     * 未覆盖」—— 设备层只钉事件载荷，控件不读修饰位时它仍全绿（与 F48 / F49 同族的盲区）。
+     * 本用例装配的是**生产** {@code ChatInputSurface}（只注入输入源，不复制滚轮路由），故走完整集。</p>
+     *
+     * <p>为什么判据用读数而不是像素：本页 render 用墙钟驱动开合动画（生产语义），像素产物带相位；
+     * {@code scroll: offset=N} 才是稳定的语义面。</p>
+     *
+     * <p>前置断言 {@code max >= 7} 不能省：内容不够长时 offset 会被 clamp 到 max，
+     * 「×7 与 ×1」就退化成「max 与 1」，幅度语义静默丢失。</p>
+     */
+    @Test
+    public void chatInputScrollHonoursShiftModifier() throws Exception {
+        StringBuilder messages = new StringBuilder();
+        for (int i = 1; i <= 16; i++) {
+            if (i > 1) {
+                messages.append(HeadlessRequest.CHAT_MESSAGE_SEPARATOR);
+            }
+            messages.append("Steve:滚动样本 ").append(i);
+        }
+        String[] base = {"--page=chat-input", "--size=1280x720", "--text=" + messages};
+
+        String baseline = renderFull("linkage-chat-input-base", base);
+        int[] baseState = scrollStateOf(baseline);
+        Assert.assertTrue("chat-input 页必须打印滚动读数：\n" + baseline, baseState[0] >= 0);
+        Assert.assertTrue("内容必须够长（否则 clamp 掩盖幅度语义）：max=" + baseState[1],
+                baseState[1] >= 7);
+        Assert.assertEquals("未滚动时 offset 必须是 0：\n" + baseline, 0, baseState[0]);
+
+        String scrolled = renderFull("linkage-chat-input-scroll", withScript(
+                "--actions=move 170 500; frame; scroll 10; wait 6", base));
+        int[] scrolledState = scrollStateOf(scrolled);
+        Assert.assertEquals("非 Shift 滚轮必须按 ×7 行滚动（clamp(±1) × scrollWheelLines）：\n" + scrolled,
+                7, scrolledState[0]);
+
+        String shifted = renderFull("linkage-chat-input-shift", withScript(
+                "--actions=move 170 500; frame; keydown SHIFT_LEFT; frame; scroll 10; wait 6", base));
+        int[] shiftedState = scrollStateOf(shifted);
+        Assert.assertEquals("Shift 必须把幅度降为 ×1 行（原版语义）：\n" + shifted,
+                1, shiftedState[0]);
+        Assert.assertNotEquals("自检：Shift 档必须与非 Shift 档不同（否则修饰位没被读）："
+                + scrolledState[0] + " vs " + shiftedState[0], scrolledState[0], shiftedState[0]);
+
+        String backToBottom = renderFull("linkage-chat-input-back", withScript(
+                "--actions=move 170 500; frame; scroll 10; frame; scroll -10; wait 6", base));
+        Assert.assertEquals("反方向滚轮必须回到最新（offset 0）：\n" + backToBottom,
+                0, scrollStateOf(backToBottom)[0]);
+    }
+
+    /** 从输出里取输入屏滚动读数 {@code {offset, max, visible}}；没有该行返回 {@code {-1, -1, -1}}。 */
+    private static int[] scrollStateOf(String output) {
+        Matcher matcher = SCROLL_STATE.matcher(output);
+        if (!matcher.find()) {
+            return new int[] {-1, -1, -1};
+        }
+        return new int[] {Integer.parseInt(matcher.group(1)), Integer.parseInt(matcher.group(2)),
+                Integer.parseInt(matcher.group(3))};
     }
 
     /** 从输出里取帧计划读数 {@code frames: N/M}；没有该行返回 {@code {-1, -1}}。 */
