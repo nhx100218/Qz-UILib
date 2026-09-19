@@ -570,13 +570,15 @@ final class ChatMarkdownPipeline {
     }
 
     /**
-     * HUD 形态 8 行截断（设计稿 §5.4，M5 起作用于 L2 视觉行，M7 作用于 RenderedLine）：
-     * 超过 8 行保留前 8 行，末行段流尾部追加省略号（与 {@code ChatCardComposer.ELLIPSIS}
+     * HUD 形态可见行数钳制（M5 起作用于 L2 视觉行，M7 作用于 RenderedLine）：超过 {@code maxLines}
+     * 行时保留前 {@code maxLines} 行，末行段流尾部追加省略号（与 {@code ChatCardComposer.ELLIPSIS}
      * 同款；行宽可用时有度量注入则先逐码点回退再补，保持「省略号不撑爆行」旧口径）。
+     *
+     * @param maxLines 可见行数上限（控制器按 HUD 高度预算推导；≤0 按 1 计）
      */
     static List<RenderedLine> clampHudLines(List<RenderedLine> lines,
-            ChatMessageList.SegmentMeasurer measurer, int fontSizePx, int maxWidthPx) {
-        int max = ChatCardComposer.HUD_MAX_LINES;
+            ChatMessageList.SegmentMeasurer measurer, int fontSizePx, int maxWidthPx, int maxLines) {
+        int max = Math.max(1, maxLines);
         if (lines.size() <= max) {
             return lines;
         }

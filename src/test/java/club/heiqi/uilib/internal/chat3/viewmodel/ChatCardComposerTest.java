@@ -23,13 +23,16 @@ public class ChatCardComposerTest {
 
     private final ChatCardComposer composer = new ChatCardComposer(new ChatLineLayouter(fixedMeasure(), 13));
 
+    /** 等宽口径:本类断言与"气泡行/无气泡行宽度分叉"无关,两者给同一宽度。 */
+    private static final ChatCardComposer.WrapWidths WIDTHS = new ChatCardComposer.WrapWidths(1000, 1000);
+
     @Test
     public void shouldComposeHeaderAndStrippedLines() {
         long arrived = NOW - 5000L; // 存活窗口内
         ChatLineRecord record = new ChatLineRecord(new ChatComponentText("<Steve> hello world"), 1, arrived);
         MessageGroupModel group = new MessageGrouper().group(Arrays.asList(record), "Alex").get(0);
 
-        ChatCardComposer.ComposedGroup composed = composer.compose(group, NOW, 1000, true);
+        ChatCardComposer.ComposedGroup composed = composer.compose(group, NOW, WIDTHS, true, null, null);
 
         Assert.assertEquals(MessageGroupModel.Alignment.OTHER_LEFT, composed.getAlignment());
         Assert.assertEquals("Steve", composed.getSender());
@@ -49,7 +52,7 @@ public class ChatCardComposerTest {
         ChatLineRecord record = new ChatLineRecord(new ChatComponentText("[公告] 维护通知"), 1, NOW - 5000L);
         MessageGroupModel group = new MessageGrouper().group(Arrays.asList(record), "Alex").get(0);
 
-        ChatCardComposer.ComposedGroup composed = composer.compose(group, NOW, 1000, true);
+        ChatCardComposer.ComposedGroup composed = composer.compose(group, NOW, WIDTHS, true, null, null);
 
         Assert.assertEquals(MessageGroupModel.Alignment.SYSTEM_CENTER, composed.getAlignment());
         Assert.assertEquals("", composed.getHeaderName());
@@ -59,12 +62,40 @@ public class ChatCardComposerTest {
         Assert.assertEquals(Arrays.asList("[公告] 维护通知\u00a7r"), composed.getMessages().get(0).getDisplayLines());
     }
 
+    /**
+     * 无气泡行按「内容框宽」切行,不按气泡外宽上限:同一串系统文本,内容框宽 40px 与 20px 切出的
+     * 行数必须不同(宽的那侧更少)。系统行没有气泡壳,把气泡的「减 2×内边距」套上去等于白亏一截。
+     */
+    @Test
+    public void systemRowWrapsByContentWidthNotBubbleWidth() {
+        StringBuilder body = new StringBuilder();
+        for (int i = 0; i < 40; i++) {
+            body.append("abcdefgh");
+        }
+        MessageGroupModel group = new MessageGrouper().group(Arrays.asList(
+                new ChatLineRecord(new ChatComponentText(body.toString()), 1, NOW)), "Alex").get(0);
+        Assert.assertEquals("反空跑：样本必须是系统行", MessageGroupModel.Alignment.SYSTEM_CENTER,
+                group.getAlignment());
+
+        ChatCardComposer.MessageLines wide = composer.compose(group, NOW,
+                new ChatCardComposer.WrapWidths(20, 40), true, null, null).getMessages().get(0);
+        ChatCardComposer.MessageLines narrow = composer.compose(group, NOW,
+                new ChatCardComposer.WrapWidths(20, 20), true, null, null).getMessages().get(0);
+
+        Assert.assertEquals("切行宽透传为内容框宽", 40, wide.getWrapWidthPx());
+        Assert.assertEquals("窄口径切行宽 = 气泡口径", 20, narrow.getWrapWidthPx());
+        Assert.assertTrue("反空跑：内容必须实际折行", wide.getDisplayLines().size() > 1);
+        Assert.assertTrue("内容框更宽 ⇒ 行数更少(" + wide.getDisplayLines().size() + " < "
+                + narrow.getDisplayLines().size() + ")",
+                wide.getDisplayLines().size() < narrow.getDisplayLines().size());
+    }
+
     @Test
     public void shouldComposeSelfGroupWithGrayName() {
         ChatLineRecord record = new ChatLineRecord(new ChatComponentText("<Steve> me"), 1, NOW - 5000L);
         MessageGroupModel group = new MessageGrouper().group(Arrays.asList(record), "Steve").get(0);
 
-        ChatCardComposer.ComposedGroup composed = composer.compose(group, NOW, 1000, true);
+        ChatCardComposer.ComposedGroup composed = composer.compose(group, NOW, WIDTHS, true, null, null);
 
         Assert.assertEquals(MessageGroupModel.Alignment.SELF_RIGHT, composed.getAlignment());
         Assert.assertEquals(SenderColorPalette.SELF_NAME_ARGB, composed.getNameColor());
@@ -85,7 +116,7 @@ public class ChatCardComposerTest {
             long arrived = NOW - 5000L;
             ChatLineRecord record = new ChatLineRecord(new ChatComponentText("<Steve> me"), 1, arrived);
             MessageGroupModel group = new MessageGrouper().group(Arrays.asList(record), "Steve").get(0);
-            ChatCardComposer.ComposedGroup composed = composer.compose(group, NOW, 1000, true);
+            ChatCardComposer.ComposedGroup composed = composer.compose(group, NOW, WIDTHS, true, null, null);
 
             Assert.assertEquals("Steve", composed.getHeaderName());
             Assert.assertEquals("Steve " + ChatClock.formatTime(arrived), composed.getHeaderText());
@@ -105,7 +136,7 @@ public class ChatCardComposerTest {
         ChatLineRecord record = new ChatLineRecord(new ChatComponentText("<Steve> old"), 1, NOW - 60_000L);
         MessageGroupModel group = new MessageGrouper().group(Arrays.asList(record), "Alex").get(0);
 
-        ChatCardComposer.ComposedGroup composed = composer.compose(group, NOW, 1000, true);
+        ChatCardComposer.ComposedGroup composed = composer.compose(group, NOW, WIDTHS, true, null, null);
 
         Assert.assertEquals("常驻模式 TTL 不生效:alpha 恒满", 255, composed.getAlpha());
         Assert.assertTrue(composed.isVisible());
@@ -123,7 +154,7 @@ public class ChatCardComposerTest {
             ChatLineRecord record = new ChatLineRecord(new ChatComponentText("<Steve> old"), 1, NOW - 60_000L);
             MessageGroupModel group = new MessageGrouper().group(Arrays.asList(record), "Alex").get(0);
 
-            ChatCardComposer.ComposedGroup composed = composer.compose(group, NOW, 1000, true);
+            ChatCardComposer.ComposedGroup composed = composer.compose(group, NOW, WIDTHS, true, null, null);
 
             Assert.assertEquals("persist=false:过 TTL 淡出结束 alpha=0", 0, composed.getAlpha());
             Assert.assertFalse("persist=false:过期组不可见", composed.isVisible());
@@ -138,7 +169,7 @@ public class ChatCardComposerTest {
         ChatLineRecord record = new ChatLineRecord(new ChatComponentText("<Steve> old"), 1, arrived);
         MessageGroupModel group = new MessageGrouper().group(Arrays.asList(record), "Alex").get(0);
 
-        ChatCardComposer.ComposedGroup composed = composer.compose(group, NOW, 1000, false);
+        ChatCardComposer.ComposedGroup composed = composer.compose(group, NOW, WIDTHS, false, null, null);
 
         Assert.assertEquals("容器形态 alpha 恒满", 255, composed.getAlpha());
         Assert.assertTrue(composed.isVisible());
@@ -247,7 +278,7 @@ public class ChatCardComposerTest {
         MessageGroupModel group = new MessageGrouper().group(Arrays.asList(record), "Alex").get(0);
 
         ChatCardComposer.HudBudget budget = new ChatCardComposer.HudBudget(12_000L, 42L);
-        ChatCardComposer.ComposedGroup composed = composer.compose(group, NOW, 1000, true, budget);
+        ChatCardComposer.ComposedGroup composed = composer.compose(group, NOW, WIDTHS, true, budget, null);
 
         Assert.assertEquals("预算注入后 alpha 恒满(合成时刻无 DONE 组)", 255, composed.getAlpha());
         Assert.assertEquals("组携带显示预算", 12_000L, composed.getBudgetMillis());
@@ -262,16 +293,16 @@ public class ChatCardComposerTest {
         ChatLineRecord record = new ChatLineRecord(new ChatComponentText("<Steve> legacy"), 1, NOW - 5000L);
         MessageGroupModel group = new MessageGrouper().group(Arrays.asList(record), "Alex").get(0);
 
-        ChatCardComposer.ComposedGroup withNull = composer.compose(group, NOW, 1000, true, null);
-        ChatCardComposer.ComposedGroup legacy = composer.compose(group, NOW, 1000, true);
+        ChatCardComposer.ComposedGroup withNull = composer.compose(group, NOW, WIDTHS, true, null, null);
+        ChatCardComposer.ComposedGroup legacy = composer.compose(group, NOW, WIDTHS, true, null, null);
 
         Assert.assertEquals("budget=null → 旧 5 参路径(alpha 一致)", legacy.getAlpha(), withNull.getAlpha());
         Assert.assertEquals("未注入预算默认 0", 0L, withNull.getBudgetMillis());
         Assert.assertEquals("未注入 start 默认 -1(未进入 HUD)", -1L, withNull.getHudVisibleStartMillis());
         Assert.assertTrue("默认入场动画开", withNull.isEnterOnMount());
 
-        ChatCardComposer.ComposedGroup container = composer.compose(group, NOW, 1000, false,
-                new ChatCardComposer.HudBudget(12_000L, 7L));
+        ChatCardComposer.ComposedGroup container = composer.compose(group, NOW, WIDTHS, false,
+                new ChatCardComposer.HudBudget(12_000L, 7L), null);
         Assert.assertEquals("容器形态 alpha 恒满", 255, container.getAlpha());
         Assert.assertEquals("容器形态不注入预算", 0L, container.getBudgetMillis());
         Assert.assertEquals("容器形态不注入 start", -1L, container.getHudVisibleStartMillis());
@@ -354,7 +385,7 @@ public class ChatCardComposerTest {
                 ChatCardComposer.interpolateSegments(base, hover, 1.0F));
     }
 
-    // ==================== T8:单条消息 8 行截断 + 省略号(设计稿 §5.4,验收 22) ====================
+    // ==================== HUD 可见行数钳制 + 省略号(上限由调用方给定,生产侧按视口预算推导) ====================
 
     /** 组装 45 字符无空格文本(约定 maxLine=20:5 字符/行 → 9 行)。 */
     private static String longText() {
@@ -365,19 +396,24 @@ public class ChatCardComposerTest {
         return sb.toString();
     }
 
+    /** 本组用例自设的钳制(8 行):上限的真实来源是"视口预算 ÷ 行高",由控制器推导,
+     *  见 {@code ChatMessageListTest#hudVisibleLinesFollowViewportBudgetNotFixedCount}。 */
+    private static final ChatCardComposer.HudClamp EIGHT_LINES = new ChatCardComposer.HudClamp(8, 8);
+
     private ChatCardComposer.ComposedGroup composeText(String text, boolean applyTtl) {
         ChatLineRecord record = new ChatLineRecord(new ChatComponentText("<Steve> " + text), 1, NOW - 5000L);
         MessageGroupModel group = new MessageGrouper().group(Arrays.asList(record), "Alex").get(0);
-        return composer.compose(group, NOW, 20, applyTtl);
+        return composer.compose(group, NOW, new ChatCardComposer.WrapWidths(20, 20), applyTtl, null,
+                applyTtl ? EIGHT_LINES : null);
     }
 
     @Test
-    public void hudClampsLongMessageToEightLinesWithEllipsis() {
+    public void hudClampsLongMessageToGivenCeilingWithEllipsis() {
         ChatCardComposer.ComposedGroup composed = composeText(longText(), true);
 
         ChatCardComposer.MessageLines message = composed.getMessages().get(0);
         List<String> lines = message.getDisplayLines();
-        Assert.assertEquals("HUD 单条消息 9 行截断到 8 行", 8, lines.size());
+        Assert.assertEquals("HUD 单条消息 9 行截断到给定上限 8 行", 8, lines.size());
         // 行1-7 保持切分原样(每行 5 字符)
         Assert.assertEquals("xxxxx", lines.get(0));
         // 第 8 行 = 裁剪(5 字符宽 20 > 可用 20-12=8 → 保留 2 字符)+ 省略号,宽度不超过行宽上限
@@ -387,7 +423,7 @@ public class ChatCardComposerTest {
     }
 
     @Test
-    public void hudKeepsEightLinesWithoutEllipsisWhenExactlyEight() {
+    public void hudKeepsAllLinesWithoutEllipsisWhenExactlyAtCeiling() {
         // 40 字符 = 恰好 8 行(每行 5 字符):行数不超上限,不加省略号(CSS line-clamp 语义)
         StringBuilder sb = new StringBuilder(40);
         for (int i = 0; i < 40; i++) {
@@ -442,7 +478,7 @@ public class ChatCardComposerTest {
         ChatLineRecord record = new ChatLineRecord(new ChatComponentTranslation("chat.type.text",
                 new Object[] {new ChatComponentText("Steve"), "- item"}), 1, NOW - 5000L);
         MessageGroupModel group = new MessageGrouper().group(Arrays.asList(record), "Alex").get(0);
-        ChatCardComposer.ComposedGroup composed = composer.compose(group, NOW, 1000, false);
+        ChatCardComposer.ComposedGroup composed = composer.compose(group, NOW, WIDTHS, false, null, null);
 
         ChatCardComposer.MessageLines message = composed.getMessages().get(0);
         Assert.assertEquals("- item", message.getDisplayText());
@@ -462,7 +498,7 @@ public class ChatCardComposerTest {
         ChatLineRecord record = new ChatLineRecord(
                 new ChatComponentText("<Steve> 兜底内容"), 1, NOW - 5000L);
         MessageGroupModel group = new MessageGrouper().group(Arrays.asList(record), "Alex").get(0);
-        ChatCardComposer.MessageLines message = composer.compose(group, NOW, 1000, false)
+        ChatCardComposer.MessageLines message = composer.compose(group, NOW, WIDTHS, false, null, null)
                 .getMessages().get(0);
 
         Assert.assertEquals("兜底本体 = 正则 rest", "兜底内容", message.getDisplayText());
@@ -477,7 +513,7 @@ public class ChatCardComposerTest {
         ChatLineRecord record = new ChatLineRecord(
                 new ChatComponentText("[公告] 维护通知"), 1, NOW - 5000L);
         MessageGroupModel group = new MessageGrouper().group(Arrays.asList(record), "Alex").get(0);
-        ChatCardComposer.MessageLines message = composer.compose(group, NOW, 1000, false)
+        ChatCardComposer.MessageLines message = composer.compose(group, NOW, WIDTHS, false, null, null)
                 .getMessages().get(0);
 
         Assert.assertEquals("系统行走原版链，保留 § 样式码（ChatComponentText 尾注 §r）",
@@ -499,7 +535,7 @@ public class ChatCardComposerTest {
                 new ChatComponentTranslation(club.heiqi.uilib.api.chat.ChatAccess.MARKDOWN_CHAT_KEY,
                         new Object[] {md}), 1, NOW - 5000L);
         MessageGroupModel group = new MessageGrouper().group(Arrays.asList(record), "Alex").get(0);
-        ChatCardComposer.ComposedGroup composed = composer.compose(group, NOW, 1000, false);
+        ChatCardComposer.ComposedGroup composed = composer.compose(group, NOW, WIDTHS, false, null, null);
 
         Assert.assertEquals(MessageGroupModel.Alignment.MARKDOWN_LEFT, composed.getAlignment());
         Assert.assertNull("markdown 组无 sender", composed.getSender());
@@ -524,7 +560,7 @@ public class ChatCardComposerTest {
                 new ChatComponentTranslation(club.heiqi.uilib.api.chat.ChatAccess.MARKDOWN_CHAT_KEY,
                         new Object[] {md}), 1, NOW - 5000L);
         MessageGroupModel group = new MessageGrouper().group(Arrays.asList(record), "Alex").get(0);
-        ChatCardComposer.MessageLines message = composer.compose(group, NOW, 1000, false)
+        ChatCardComposer.MessageLines message = composer.compose(group, NOW, WIDTHS, false, null, null)
                 .getMessages().get(0);
         Assert.assertEquals("§ 原样字面，不剥不转", md, message.getDisplayText());
         Assert.assertFalse("无 formatted 尾注（不进原版渲染文本通道）: " + message.getDisplayText(),

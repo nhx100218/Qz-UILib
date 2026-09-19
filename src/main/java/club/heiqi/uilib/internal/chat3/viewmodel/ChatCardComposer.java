@@ -17,11 +17,86 @@ import club.heiqi.uilib.internal.chat3.data.ChatLineRecord;
  */
 public final class ChatCardComposer {
 
-    /** HUD 形态单条消息最大显示行数(设计稿 §5.4:maxLines=8,超出末行省略号;容器形态完整显示)。 */
-    public static final int HUD_MAX_LINES = 8;
-
     /** 截断末行省略号(与 SceneLineClamp.ELLIPSIS 同款三 ASCII 点,任何字体都有字形)。 */
     public static final String ELLIPSIS = "...";
+
+    /**
+     * 一次合成的切行宽度口径(唯一真相):气泡行与无气泡行<b>不同源</b>,必须分别声明。
+     *
+     * <ul>
+     *   <li><b>气泡行</b> = 气泡外宽上限(内容框宽 − 2×气泡内边距):文字要落在气泡壳里;</li>
+     *   <li><b>无气泡行</b>(系统 / markdown 系统)无壳无内边距,可用宽就是<b>内容框宽</b>本身。</li>
+     * </ul>
+     *
+     * <p>此前两者共用气泡口径:无气泡行每行少放 2×气泡内边距 ⇒ 行数凭空变多、更早撞上可见行数
+     * 上限,末行省略号也按错误宽度回退裁剪(真机「HUD 里系统消息显示不全」的成因之一)。</p>
+     */
+    public static final class WrapWidths {
+
+        private final int bubbleWidthPx;
+        private final int noBubbleWidthPx;
+
+        /**
+         * @param bubbleWidthPx   气泡行切行宽(气泡外宽上限)
+         * @param noBubbleWidthPx 无气泡行切行宽(内容框宽)
+         */
+        public WrapWidths(int bubbleWidthPx, int noBubbleWidthPx) {
+            this.bubbleWidthPx = Math.max(1, bubbleWidthPx);
+            this.noBubbleWidthPx = Math.max(1, noBubbleWidthPx);
+        }
+
+        /** @param noBubble 是否无气泡行(系统 / markdown 系统) @return 该类行的切行宽(px) */
+        public int wrapWidthFor(boolean noBubble) {
+            return noBubble ? noBubbleWidthPx : bubbleWidthPx;
+        }
+
+        /** @return 气泡行切行宽(px) */
+        public int getBubbleWidthPx() {
+            return bubbleWidthPx;
+        }
+
+        /** @return 无气泡行切行宽(px) */
+        public int getNoBubbleWidthPx() {
+            return noBubbleWidthPx;
+        }
+    }
+
+    /**
+     * HUD 形态单条消息可见行数钳制:HUD 可见高度预算 ÷ 该类别有效行高(见
+     * {@code ChatMarkdownSettings#hudMaxLinesFor}),由控制器按当前视口与倍率推导后传入——
+     * 本类只消费,不持有任何与空间无关的常量。
+     *
+     * <p>{@code null} = 不钳制(容器形态完整显示)。</p>
+     */
+    public static final class HudClamp {
+
+        private final int bubbleMaxLines;
+        private final int noBubbleMaxLines;
+
+        /**
+         * @param bubbleMaxLines   气泡消息可见行数上限
+         * @param noBubbleMaxLines 无气泡消息(系统 / markdown 系统)可见行数上限
+         */
+        public HudClamp(int bubbleMaxLines, int noBubbleMaxLines) {
+            this.bubbleMaxLines = Math.max(1, bubbleMaxLines);
+            this.noBubbleMaxLines = Math.max(1, noBubbleMaxLines);
+        }
+
+        /** @param noBubble 是否无气泡行(系统 / markdown 系统) @return 该类消息的可见行数上限(≥1) */
+        public int maxLinesFor(boolean noBubble) {
+            return noBubble ? noBubbleMaxLines : bubbleMaxLines;
+        }
+
+        /** @return 气泡消息可见行数上限 */
+        public int getBubbleMaxLines() {
+            return bubbleMaxLines;
+        }
+
+        /** @return 无气泡消息可见行数上限 */
+        public int getNoBubbleMaxLines() {
+            return noBubbleMaxLines;
+        }
+    }
 
     /** 组内一条消息的渲染数据:记录 + 切分后的显示行(去前缀,保留格式码)+ 消息原文与定行宽。 */
     public static final class MessageLines {
@@ -249,36 +324,29 @@ public final class ChatCardComposer {
     }
 
     /**
-     * 合成(5 参,旧语义保留):内部转调 6 参重载(budget = null 回退旧 TTL 路径)。
+     * 合成(唯一签名):分组 → 按宽度口径切行 → HUD 可见行数钳制 → 组头/配色/α。
      *
-     * @param group         消息组
-     * @param nowMillis     当前时刻
-     * @param maxLineWidthPx 单行最大宽度(窗口宽 - 2×边距 - 2×内边距)
-     * @param applyTtl       true = HUD 形态;false = 容器形态(alpha 恒 255)
+     * <p>三种形态由参数显式表达,不再各留一个重载——「谁在什么钳制下合成」在调用处一眼可读:
+     * HUD 预算路径 = {@code applyTtl=true, budget!=null, clamp!=null};HUD 常驻路径 =
+     * {@code applyTtl=true, budget=null, clamp!=null};容器形态 = {@code applyTtl=false,
+     * clamp=null}(完整显示)。行数上限来自当前视口与倍率的推导结果,不是藏在常量里的 8。</p>
+     *
+     * <p>budget 非空时组 alpha 恒 255,淡出由渲染层每帧 {@link #hudAlpha(long, long, long, long)}
+     * 按可见时钟驱动:预算 = 每条消息可见显示时间(默认
+     * {@link ChatMarkdownSettings#getHudTtlMillis()}),只在实际渲染(聊天关闭 HUD 形态)时消耗,
+     * 聊天框打开时冻结。budget 为 null 且 applyTtl=true → 旧路径(wall-clock TTL + easeInQuad
+     * 淡出,常驻模式与老调用方走这条)。</p>
+     *
+     * @param group     消息组
+     * @param nowMillis 当前时刻
+     * @param widths    切行宽度口径(气泡行 / 无气泡行不同源)
+     * @param applyTtl  true = HUD 形态(行数钳制 + 预算/生命周期注入);false = 容器形态(alpha 恒 255)
+     * @param budget    HUD 显示预算(消息生命周期;null = 旧 TTL 路径)
+     * @param clamp     HUD 可见行数钳制(null = 不钳制,容器形态)
      * @return 合成组
      */
-    public ComposedGroup compose(MessageGroupModel group, long nowMillis, int maxLineWidthPx, boolean applyTtl) {
-        return compose(group, nowMillis, maxLineWidthPx, applyTtl, null);
-    }
-
-    /**
-     * 合成(6 参,显示预算版):applyTtl 且 budget 非空 → 组 alpha 恒 255,淡出由渲染层
-     * 每帧 {@link #hudAlpha(long, long, long, long)} 按可见时钟驱动。预算 = 每条消息
-     * 可见显示时间(默认 {@link ChatMarkdownSettings#getHudTtlMillis()}),只在实际渲染
-     * (聊天关闭 HUD 形态)时消耗,聊天框打开时冻结——HUD 形态合成时刻没有已 DONE 的组
-     * 会进来,alpha 不存在"创建即过期"。budget 为 null → 旧路径(wall-clock TTL +
-     * easeInQuad 淡出,老调用方兼容)。
-     *
-     * @param group          消息组
-     * @param nowMillis      当前时刻
-     * @param maxLineWidthPx 单行最大宽度(窗口宽 - 2×边距 - 2×内边距)
-     * @param applyTtl        true = HUD 形态(行数截断 + 预算/生命周期注入);false = 容器形态
-     *                        (alpha 恒 255,不注入)
-     * @param budget         HUD 显示预算(消息生命周期;null = 旧 TTL 路径)
-     * @return 合成组
-     */
-    public ComposedGroup compose(MessageGroupModel group, long nowMillis, int maxLineWidthPx, boolean applyTtl,
-            HudBudget budget) {
+    public ComposedGroup compose(MessageGroupModel group, long nowMillis, WrapWidths widths, boolean applyTtl,
+            HudBudget budget, HudClamp clamp) {
         long latestMillis = group.getLatestMillis();
         // 预算注入路径(applyTtl 且 budget != null):alpha 恒 255——淡出由渲染层每帧 hudAlpha
         // 按可见时钟驱动,预算只在 HUD 实际渲染时消耗,聊天框打开时冻结,不按 wall-clock 计算;
@@ -309,18 +377,23 @@ public final class ChatCardComposer {
         // markdownSystem),切分与渲染必须同源 → 共用 systemLayouter。
         // K3 三轮:系统消息按 font-system 12px 口径切分(切分与渲染同源),
         // 系统行切分器未注入时回退 body 切分器(旧行为)
-        ChatLineLayouter active = (alignment == MessageGroupModel.Alignment.SYSTEM_CENTER
-                || alignment == MessageGroupModel.Alignment.MARKDOWN_LEFT)
-                && systemLayouter != null ? systemLayouter : layouter;
+        // 无气泡家族:无壳无内边距 ⇒ 切行宽取内容框宽本身,可见行数上限也按系统行高折算
+        boolean noBubble = alignment == MessageGroupModel.Alignment.SYSTEM_CENTER
+                || alignment == MessageGroupModel.Alignment.MARKDOWN_LEFT;
+        ChatLineLayouter active = noBubble && systemLayouter != null ? systemLayouter : layouter;
+        int wrapWidthPx = widths.wrapWidthFor(noBubble);
+        int maxLines = clamp == null ? 0 : clamp.maxLinesFor(noBubble);
         List<MessageLines> messages = new ArrayList<MessageLines>();
         for (MessageGroupModel.GroupLine line : group.getLines()) {
             ChatLineRecord record = line.getRecord();
             String display = displayText(line);
             // 走 layoutFragments 而非 layout:跨显示行 URL 续链需要每行的断行来源
             List<ChatLineLayouter.LineFragment> fragments =
-                    active.layoutFragments(display, maxLineWidthPx);
-            if (applyTtl) {
-                fragments = clampHudFragments(fragments, maxLineWidthPx);
+                    active.layoutFragments(display, wrapWidthPx);
+            if (applyTtl && maxLines > 0) {
+                // 末行省略号的度量与宽度都取"本行自己那一把尺"(active + 本类切行宽),
+                // 否则系统行会按气泡字号(13px)与气泡外宽回退裁剪,末行白白少显示一截
+                fragments = clampHudFragments(fragments, active, wrapWidthPx, maxLines);
             }
             List<String> lines = new ArrayList<String>(fragments.size());
             float maxLineWidth = 0.0F;
@@ -331,7 +404,7 @@ public final class ChatCardComposer {
             messages.add(new MessageLines(record, Collections.unmodifiableList(lines),
                     Collections.unmodifiableList(
                             new ArrayList<ChatLineLayouter.LineFragment>(fragments)),
-                    maxLineWidth, display, maxLineWidthPx));
+                    maxLineWidth, display, wrapWidthPx));
         }
         ComposedGroup composed = new ComposedGroup(alignment, group.getSender(), headerName, headerTime, nameColor,
                 messages, latestMillis, alpha);
@@ -345,37 +418,42 @@ public final class ChatCardComposer {
     }
 
     /**
-     * HUD 单条消息行数截断(设计稿 §5.4):超过 {@link #HUD_MAX_LINES} 行时保留前 8 行,
-     * 末行按行宽上限裁剪后追加省略号(与 SceneLineClamp 语义一致:行数恰好等于上限不截断)。
-     * 容器形态(applyTtl=false)不调用,同一消息完整显示(验收 22)。
+     * HUD 单条消息行数钳制:超过 {@code maxLines} 行时保留前 {@code maxLines} 行,末行按行宽上限
+     * 裁剪后追加省略号(与 SceneLineClamp 语义一致:行数恰好等于上限不截断)。上限由控制器按
+     * HUD 可见高度预算动态推导(见 {@link HudClamp});容器形态(clamp=null)不调用,完整显示。
      *
-     * @param fragments      切分后的显示行片段(layouter 输出,不可变)
-     * @param maxLineWidthPx 单行最大宽度(与 layouter.layout 同款行宽上限,省略号不回填超宽)
-     * @return 截断后的片段列表(新列表);未超限返回原列表语义(零拷贝)
+     * @param fragments      切分后的显示行片段(active 切分器输出,不可变)
+     * @param active         本消息所用切分器(气泡 / 系统字号;省略号度量必须与切分同源)
+     * @param maxLineWidthPx 本消息的切行宽(省略号不回填超宽)
+     * @param maxLines       可见行数上限(≥1)
+     * @return 钳制后的片段列表(新列表);未超限返回原列表(零拷贝)
      */
     private List<ChatLineLayouter.LineFragment> clampHudFragments(
-            List<ChatLineLayouter.LineFragment> fragments, float maxLineWidthPx) {
-        if (fragments.size() <= HUD_MAX_LINES) {
+            List<ChatLineLayouter.LineFragment> fragments, ChatLineLayouter active,
+            float maxLineWidthPx, int maxLines) {
+        if (fragments.size() <= maxLines) {
             return fragments;
         }
         List<ChatLineLayouter.LineFragment> kept =
-                new ArrayList<ChatLineLayouter.LineFragment>(
-                        fragments.subList(0, HUD_MAX_LINES));
-        int last = HUD_MAX_LINES - 1;
+                new ArrayList<ChatLineLayouter.LineFragment>(fragments.subList(0, maxLines));
+        int last = maxLines - 1;
         // withText 保留断行来源:末行裁剪只换文本,不改变「本行是否续词」
         kept.set(last, kept.get(last).withText(
-                ellipsizeTail(kept.get(last).getText(), maxLineWidthPx)));
+                ellipsizeTail(kept.get(last).getText(), active, maxLineWidthPx)));
         return kept;
     }
 
     /**
      * 末行追加省略号:行宽未超可用宽(行宽上限 - 省略号宽)时原行 + 省略号;
      * 超限时逐字符裁剪(§ 格式码对零宽且不可拆)到可用宽,再追加省略号。
+     *
+     * @param active 本消息所用切分器(度量与切分同源:系统行按系统字号,不借气泡字号,
+     *               否则末行会按更宽的字号判定「放不下」而被多裁一截)
      */
-    private String ellipsizeTail(String line, float maxLineWidthPx) {
-        float ellipsisWidth = layouter.measureWidth(ELLIPSIS);
+    private String ellipsizeTail(String line, ChatLineLayouter active, float maxLineWidthPx) {
+        float ellipsisWidth = active.measureWidth(ELLIPSIS);
         float available = maxLineWidthPx - ellipsisWidth;
-        if (layouter.measureWidth(line) <= available) {
+        if (active.measureWidth(line) <= available) {
             return line + ELLIPSIS;
         }
         StringBuilder kept = new StringBuilder();
@@ -387,7 +465,7 @@ public final class ChatCardComposer {
                 i += 2;
                 continue;
             }
-            if (layouter.measureWidth(kept.toString() + ch) > available) {
+            if (active.measureWidth(kept.toString() + ch) > available) {
                 break;
             }
             kept.append(ch);

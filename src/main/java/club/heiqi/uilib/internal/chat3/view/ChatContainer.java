@@ -371,9 +371,11 @@ public final class ChatContainer {
         // 容器列表挂「容器全量信号」(controller.containerGroupsSignal()),不挂共享 HUD 信号:
         // 打开方向 COLLAPSING 阶段共享信号走 TTL 预算过滤,预算耗尽的历史消息在弹出动画期间
         // 不合成 → 文字在动画尾部瞬间刷出(2026-08-31 真机闪烁);容器信号恒全量即时呈现。
+        // 容器形态不截断(ttlFade=false);表格 / display 数学的内嵌滚动窗口取紧凑值
+        // (ChatMarkdownSettings#getInternalScrollLines),完整内容由容器外层滚动承载
         SceneListHandle listHandle = controller.messageList().mount(rt, listViewport,
-                controller.containerGroupsSignal(), ChatMessageList.Style.container(), registry,
-                controller.frameMillisSignal());
+                controller.containerGroupsSignal(), ChatMessageList.Style.container(),
+                registry, controller.frameMillisSignal());
 
         // 滚动唯一汇点:历史滚动偏移(px) → 视口滚动属性(结构版本驱动重算)。
         //

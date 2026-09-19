@@ -355,8 +355,11 @@ markdown 样式位随 run 拷贝保留、latex/codeSpan 段恒透传（code 内�
 引用块语义的正常化，无既有测试钉旧缺失 |
 | URL 跨行 | 换行前整条流链接化 → 每行 link 值恒为完整 URL，气泡路 `UrlChain` 回填机制
 不再被触达（系统消息逐行 PRESERVE+续链原样保留）；`ChatUrlLinkifier` 存留件身份不变 |
-| HUD 截断 | `clampHudLines`：L2 视觉行 >8 时保 8 行、末行按度量回退后补 `...`
-（无度量注入时直补）；行节点 maxLines/ellipsis 防御照旧 |
+| HUD 截断 | `clampHudLines`：L2 视觉行 >上限时保上限行、末行按度量回退后补 `...`
+（无度量注入时直补）；行节点 maxLines/ellipsis 防御照旧。
+**【后续订正】** 上文「8」当时是固定条数；现上限按 `ChatMarkdownSettings#hudMaxLinesFor`
+（HUD 可见高度预算 ÷ 该类别有效行高）动态推导，无气泡行的切行宽亦改用内容框宽而非气泡外宽上限
+——真机「离开聊天框后系统消息显示不全」的成因即此，落点见 `ChatCardComposer.HudClamp` / `WrapWidths` |
 | headless 同源度量 | `ChatMessageList.SegmentFlowWrapper` 注入缝：生产 = L2 `wrapLines` +
 `FontService` 度量（与切分/钳宽/命中一把尺）；测试注入 4px 同源替身，保持「composer 切行
 宽 == 渲染换行宽 == 命中度量」既有前提（`longSelfMessageClamps...` 首轮即因两把尺而红，

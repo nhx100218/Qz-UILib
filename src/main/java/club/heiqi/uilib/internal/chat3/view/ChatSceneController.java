@@ -352,10 +352,15 @@ public final class ChatSceneController {
         if (newWidth != hostViewportWidth || newHeight != hostViewportHeight) {
             hostViewportWidth = newWidth;
             hostViewportHeight = newHeight;
-            // 视口变化(窗口缩放/分辨率切换):动态尺寸变化,重建形态树
             if (runtime != null && root != null) {
+                // 根宽 = 内容框宽:视口变化必须同步,否则缩放后仍按旧宽度排版(静态快照缺失效通道)
+                root.setPreferredWidth(Math.max(1, ChatMarkdownSettings.chatWidthFor(newWidth)));
+                // 视口变化(窗口缩放/分辨率切换):动态尺寸变化,重建形态树
                 rebuildTree(frameMillis.get().longValue());
             }
+            // 切行宽与可见行数上限都随视口变化 ⇒ 显式让组信号失效重算;否则 Computed 记忆化
+            // 只看 contentVersion/形态,旧宽度与旧上限会一直用到下一次内容变化
+            notifyDataChanged();
         }
     }
 
@@ -639,6 +644,41 @@ public final class ChatSceneController {
                 * ChatMarkdownSettings.getBubbleMaxWidthRatio());
     }
 
+    /**
+     * 切行宽度口径(两形态同源):气泡行 = 气泡外宽上限,无气泡行 = 内容框宽本身。
+     *
+     * <p>无气泡行(系统 / markdown 系统)没有气泡壳,可用宽就是内容框宽——把气泡的
+     * 「减 2×气泡内边距」套上去会让系统消息每行少放一截,凭空多出几行、更早撞上可见行数上限。
+     * 内容框被外接工具栏钳窄的容器属于两形态共有的既有边界(本口径与 HUD 同值)。</p>
+     */
+    ChatCardComposer.WrapWidths wrapWidths() {
+        int contentWidth = Math.max(1, ChatMarkdownSettings.chatWidthFor(hostViewportWidth));
+        return new ChatCardComposer.WrapWidths(
+                Math.max(1, contentWidth - 2 * ChatMarkdownSettings.getBubblePaddingX()), contentWidth);
+    }
+
+    /**
+     * HUD 可见行数钳制(按当前视口高与<b>有效</b>行高推导):气泡与系统两类字号不同 → 分开算。
+     *
+     * <p>上限 = {@link ChatMarkdownSettings#hudMaxLinesFor}(视口高 × hudMaxHeightRatio ÷ 行高),
+     * 与 HUD 堆叠高度裁剪共用同一份预算。视口变化经 {@link #setHostViewport}、倍率变化经
+     * {@code runtime.fontEpoch} 触达重算——不落任何与空间无关的常量。</p>
+     *
+     * <p><b>已知边界(独立复核指出,本轮有意不修)</b>:上限吃的是整份预算,没有先扣气泡组的
+     * 固定外框(组头行 + 上下内边距 ⇒ 约 +26px@100%),于是「一条长消息独占 HUD」时组高可略超
+     * 半屏,且更旧的组按 {@code trimHudGroupsByHeight} 语义整组让位(不等 TTL;被挤掉的消息在
+     * 聊天框里完整可见)。不修的理由是硬约束而非取舍:HUD 截断输出被两份「历史证据不得重录」的
+     * 冻结快照({@code table-literal-*_true.snapshot})与 SHA256 门禁锁定,扣外框会改变 400×300
+     * 下的气泡上限(8→6)并让快照与门禁同时失效——是否允许重录历史证据需用户裁决,属独立增量。</p>
+     */
+    ChatCardComposer.HudClamp hudClamp() {
+        return new ChatCardComposer.HudClamp(
+                ChatMarkdownSettings.hudMaxLinesFor(hostViewportHeight,
+                        ChatFontMetrics.chatLineHeightPx(runtime)),
+                ChatMarkdownSettings.hudMaxLinesFor(hostViewportHeight,
+                        ChatFontMetrics.systemLineHeightPx(runtime)));
+    }
+
     /** 树根重建(形态切换;旧挂载点整体移除,新树上重新 forEach 组列表)。
      *  @param nowMillis 当前帧 wall millis(帧信号未提交也可用;tick 驱动传精确帧时刻) */
     private void rebuildTree(long nowMillis) {
@@ -705,7 +745,7 @@ public final class ChatSceneController {
             // HUD 形态注入可见时钟信号:渲染层淡出按可见时钟驱动,预算只在 HUD 真正
             // 可见时消耗(聊天框打开期间冻结,关闭后用尽剩余预算继续显示)
             listHandle = messageList().mount(runtime, list, groupsSignal(),
-                    ChatMessageList.Style.hud(), messageNodes, frameMillis, hudVisibleSignal);
+                    ChatMessageList.Style.hud(hudClamp()), messageNodes, frameMillis, hudVisibleSignal);
         }
         // 非 HUD 阶段:HUD 树清空(整窗隐藏,容器由输入屏幕绘制)
         hudTreeBuilt = hud;
@@ -804,8 +844,9 @@ public final class ChatSceneController {
         }
         hudEverFirstSeqs.retainAll(alive);
         List<MessageGroupModel> groups = grouper.group(snapshot, selfNameProvider.selfName());
-        int maxLine = Math.max(1, ChatMarkdownSettings.chatWidthFor(hostViewportWidth)
-                - 2 * ChatMarkdownSettings.getBubblePaddingX());
+        // 宽度口径与可见行数钳制:两形态同源(容器路径只少一个 clamp——不截断)
+        ChatCardComposer.WrapWidths widths = wrapWidths();
+        ChatCardComposer.HudClamp clamp = applyTtl ? hudClamp() : null;
         boolean persist = ChatMarkdownSettings.isHudPersistMessages();
         // 预算路径下 compose 的 nowMillis 无实际用途(alpha 恒 255,淡出由渲染层按
         // 可见时钟驱动,组头时间戳按组内最新到达时刻);不读帧时钟 → 组列表 Computed
@@ -816,8 +857,8 @@ public final class ChatSceneController {
                 new ArrayList<ChatCardComposer.ComposedGroup>();
         for (MessageGroupModel group : groups) {
             if (!applyTtl) {
-                // 容器路径:旧重载(budget=null),不碰生命周期
-                composed.add(composer().compose(group, 0L, maxLine, false));
+                // 容器路径:不截断(clamp=null),不碰生命周期
+                composed.add(composer().compose(group, 0L, widths, false, null, null));
                 continue;
             }
             // HUD 形态:高度裁剪阈值(设计稿 §3.1,只进不退——被裁组不复活)先过滤
@@ -835,13 +876,13 @@ public final class ChatSceneController {
                     continue; // 不再合成(结构移除,节点卸载)
                 }
                 lifecycle.markEntered(hudVisible); // 幂等,重挂载不重置预算
-                composed.add(composer().compose(group, 0L, maxLine, true,
+                composed.add(composer().compose(group, 0L, widths, true,
                         new ChatCardComposer.HudBudget(lifecycle.getBudgetMillis(),
-                                lifecycle.getHudVisibleStartMillis())));
+                                lifecycle.getHudVisibleStartMillis()), clamp));
             } else {
                 // 常驻模式:完全跳过生命周期(alpha 255 由 compose 旧路径保证),
                 // enterOnMount 仍按集合计算
-                composed.add(composer().compose(group, 0L, maxLine, true));
+                composed.add(composer().compose(group, 0L, widths, true, null, clamp));
             }
             // enterOnMount 门控(D6 组 key 漂移修复):判定 = 「组内是否存在任一已登记 seq」——
             // 组内全部 seq 均未登记才播放入场;每次 HUD 合成后无条件登记组内全部 seq。
@@ -1115,8 +1156,7 @@ public final class ChatSceneController {
         if (groups == null || groups.isEmpty()) {
             return;
         }
-        int maxHeight = (int) Math.round(hostViewportHeight
-                * ChatMarkdownSettings.getHudMaxHeightRatio());
+        int maxHeight = ChatMarkdownSettings.hudHeightBudgetFor(hostViewportHeight);
         if (maxHeight <= 0) {
             return;
         }

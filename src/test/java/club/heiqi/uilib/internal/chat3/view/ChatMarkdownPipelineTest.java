@@ -69,21 +69,21 @@ public class ChatMarkdownPipelineTest {
     }
 
     @Test
-    public void hudClampKeepsEightAndAppendsEllipsisWithWidthBudget() {
+    public void hudClampKeepsCeilingAndAppendsEllipsisWithWidthBudget() {
         List<ChatMarkdownPipeline.RenderedLine> shortDoc =
                 new ArrayList<ChatMarkdownPipeline.RenderedLine>();
         for (int i = 0; i < 8; i++) {
             shortDoc.add(rline("行" + i));
         }
-        Assert.assertSame("恰好 8 行不截断(§5.4 语义)", shortDoc,
-                ChatMarkdownPipeline.clampHudLines(shortDoc, null, 13, 140));
+        Assert.assertSame("恰好等于上限不截断", shortDoc,
+                ChatMarkdownPipeline.clampHudLines(shortDoc, null, 13, 140, 8));
         List<ChatMarkdownPipeline.RenderedLine> longDoc =
                 new ArrayList<ChatMarkdownPipeline.RenderedLine>();
         for (int i = 0; i < 12; i++) {
             longDoc.add(rline("x"));
         }
         List<ChatMarkdownPipeline.RenderedLine> clamped =
-                ChatMarkdownPipeline.clampHudLines(longDoc, null, 13, 140);
+                ChatMarkdownPipeline.clampHudLines(longDoc, null, 13, 140, 8);
         Assert.assertEquals(8, clamped.size());
         List<TextSegment> last = clamped.get(7).segments();
         Assert.assertEquals(1, last.size());
@@ -102,7 +102,7 @@ public class ChatMarkdownPipelineTest {
             wide.add(rline("abcdefghij"));
         }
         List<ChatMarkdownPipeline.RenderedLine> cut =
-                ChatMarkdownPipeline.clampHudLines(wide, fourPx, 13, 40);
+                ChatMarkdownPipeline.clampHudLines(wide, fourPx, 13, 40, 8);
         TextSegment tail = cut.get(7).segments().get(cut.get(7).segments().size() - 1);
         // 10 字行 = 40px 已吃满预算 → 逐码点回退到 7 字 + "..." = 40px
         Assert.assertEquals("abcdefg...", tail.getText());

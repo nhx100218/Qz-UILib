@@ -77,6 +77,17 @@ public final class ChatMarkdownSettings {
     private static volatile boolean hudPersistMessages = false;
     /** HUD 堆叠高度上限 = 视口高 × 比例(P1 刷屏让位用)。 */
     private static volatile double hudMaxHeightRatio = 0.5;
+    /**
+     * 表格 / display 数学消息的<b>内嵌滚动窗口</b>行数预算(容器形态用;HUD 形态取该消息的可见行数上限)。
+     *
+     * <p>它是"可视窗口尺寸",不是"截断条数":容器里列表区高度小于半屏(还要扣输入条与内缩),
+     * 窗口必须小于列表区,否则消息自身就装不下、用户要滚两次;HUD 形态没有输入源(滚不动),
+     * 那里直接把窗口开到可见上限,让消息尽量占满可用高度。</p>
+     *
+     * <p>动态化为「容器列表区高度 ÷ 行高」需要一条容器→列表的高度通道(窗口高度在挂载期定死),
+     * 属独立增量——本轮只登记边界,不在这里再造一条并行的高度事实。</p>
+     */
+    private static volatile int internalScrollLines = 8;
     /** HUD 组出生 enter 动画时长(ms;P1 opacity 通道用)。 */
     private static volatile long enterAnimMillis = 180L;
     /** 收起动画时长(ms,HUD 气泡收起;设计 160)。 */
@@ -329,6 +340,39 @@ public final class ChatMarkdownSettings {
         return Math.max(minChatWidthPx, Math.min(ratioWidth, chatWidthMaxPx));
     }
 
+    /**
+     * HUD 形态可见高度预算 = 视口高 × {@link #getHudMaxHeightRatio()},单位与入参一致
+     * (生产喂入的是 {@code mc.displayWidth/displayHeight} 那侧的宿主像素,本类不另做换算)。
+     *
+     * <p>HUD 堆叠高度裁剪(「刷屏不侵占半屏以上」)与单条消息<b>可见行数上限</b>共用本式:
+     * 后者此前是固定 8 行常量,于是 720p 下只用掉预算的三分之一、换分辨率/切字号倍率都不变
+     * (静态假定);两处比例乘法也各写一份,调参改一处会静默分叉。</p>
+     *
+     * @param viewportHeightPx 视口高(与 {@code ChatSceneController#setHostViewport} 同单位;{@code <= 0} = 未知)
+     * @return 预算(px;视口未知时 0)
+     */
+    public static int hudHeightBudgetFor(int viewportHeightPx) {
+        if (viewportHeightPx <= 0) {
+            return 0;
+        }
+        return (int) Math.round(viewportHeightPx * hudMaxHeightRatio);
+    }
+
+    /**
+     * HUD 形态单条消息可见行数上限 = 高度预算在该类别<b>有效行高</b>下可容纳的行数(至少 1 行)。
+     *
+     * <p>调用方按消息类别传各自的有效行高(气泡 13/18 与系统 12/16 不同源),故上限也分类别;
+     * 上限从此只由「可用高度 ÷ 行高」决定,不再是与空间无关的常量——视口与倍率变化分别经
+     * {@code ChatSceneController#setHostViewport} 与 {@code runtime.fontEpoch} 触达重算。</p>
+     *
+     * @param viewportHeightPx      视口高(同 {@link #hudHeightBudgetFor})
+     * @param effectiveLineHeightPx 该类别有效行高(已含用户倍率;{@code <= 0} 按 1 计)
+     * @return 行数上限(≥1)
+     */
+    public static int hudMaxLinesFor(int viewportHeightPx, int effectiveLineHeightPx) {
+        return Math.max(1, hudHeightBudgetFor(viewportHeightPx) / Math.max(1, effectiveLineHeightPx));
+    }
+
     /** @return 聊天窗口距屏幕边缘边距(px) */
     public static int getChatMarginPx() {
         return chatMarginPx;
@@ -388,6 +432,16 @@ public final class ChatMarkdownSettings {
      */
     public static void setHudPersistMessages(boolean value) {
         hudPersistMessages = value;
+    }
+
+    /** @return 容器形态下表格 / display 数学消息的内嵌滚动窗口行数预算 */
+    public static int getInternalScrollLines() {
+        return Math.max(1, internalScrollLines);
+    }
+
+    /** 设置内嵌滚动窗口行数预算(容器形态新建的组生效;已建组窗口高度在挂载期定死)。 */
+    public static void setInternalScrollLines(int value) {
+        internalScrollLines = Math.max(1, value);
     }
 
     /** @return 聊天窗口最大宽(逻辑 px,默认 640 封顶;360 是历史误档，见字段注释) */

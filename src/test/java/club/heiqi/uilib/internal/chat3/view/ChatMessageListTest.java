@@ -148,10 +148,21 @@ public class ChatMessageListTest {
         }
     };
 
+    /**
+     * 高上限(等价不截断):本类里直接构造 composed 组喂渲染层的用例与可见行数上限无关。
+     * 取有限值而非 {@code Integer.MAX_VALUE}——后者与行高相乘会在内嵌滚动窗口预算里整数溢出。
+     */
+    private static final ChatCardComposer.HudClamp UNCLAMPED =
+            new ChatCardComposer.HudClamp(100_000, 100_000);
+
+    /** 直接构造用:等宽口径(气泡行与无气泡行同宽,断言不涉及宽度分叉)。 */
+    private static final ChatCardComposer.WrapWidths EQUAL_WIDTHS =
+            new ChatCardComposer.WrapWidths(1_000, 1_000);
+
     private ComposedGroup compose(MessageGroupModel group) {
         ChatCardComposer composer = new ChatCardComposer(new ChatLineLayouter(FIXED,
                 ChatMarkdownSettings.getChatFontSizePx()));
-        return composer.compose(group, T0 + 60_000L, 1_000, true);
+        return composer.compose(group, T0 + 60_000L, EQUAL_WIDTHS, true, null, UNCLAMPED);
     }
 
     private static ChatSceneController controller() {
@@ -710,8 +721,8 @@ public class ChatMessageListTest {
             Map<SceneNode, ChatLineRecord> registry =
                     new java.util.IdentityHashMap<SceneNode, ChatLineRecord>();
             SceneListHandle handle = controller.messageList().mount(rt, list,
-                    controller.groupsSignal(), ChatMessageList.Style.hud(), registry,
-                    controller.frameMillisSignal(), hudVisible);
+                    controller.groupsSignal(), ChatMessageList.Style.hud(controller.hudClamp()),
+                    registry, controller.frameMillisSignal(), hudVisible);
             controller.tick(T0);
             rt.flush();
 
@@ -881,9 +892,10 @@ public class ChatMessageListTest {
                 }, PARSER, FIXED_MEASURER, FIXED_WRAP);
     }
 
-    // ==================== T8:单条消息 8 行截断(设计稿 §5.4,验收 22) + latex 段流后处理 ====================
+    // ==================== HUD 可见行数钳制(上限按视口预算推导) + latex 段流后处理 ====================
 
-    /** 320 字符:视口 400 → chatWidth=160 → maxLine=140(4px/字符 → 35 字符/行) → 10 行,超 8 行上限。 */
+    /** 320 字符:视口 400 → 系统行切行宽 = 内容框宽 160(4px/字符 → 40 字符/行) → 8 行;
+     *  气泡行另有更窄的气泡内宽口径,同一串在气泡里会切出更多行。 */
     private static String longMessageBody() {
         StringBuilder sb = new StringBuilder(320);
         for (int i = 0; i < 320; i++) {
@@ -946,7 +958,8 @@ public class ChatMessageListTest {
         Assert.assertEquals("反空跑：表头两列", 2, tables.get(0).getHeader().getCells().size());
         Assert.assertEquals("反空跑：十二个数据行属于 TABLE", 12, tables.get(0).getRows().size());
         for (boolean hud : new boolean[] {true, false}) {
-            SceneNode message = tableConsumerMessage(source, explicit, hud, true);
+            ConsumedMessage consumed = tableConsumerMessage(source, explicit, hud, true);
+            SceneNode message = consumed.node;
             String snapshot = tableNodeSnapshot(message);
             String resource = "table-literal-" + explicit + "_" + hud + ".snapshot";
             try (java.io.InputStream input = ChatMessageListTest.class.getResourceAsStream(resource)) {
@@ -960,23 +973,26 @@ public class ChatMessageListTest {
                 Assert.assertEquals("历史消费者可见输出必须逐字节等价: " + resource,
                         new String(bytes.toByteArray(), java.nio.charset.StandardCharsets.UTF_8), snapshot);
             }
-            assertLiteralTableFloor(message, hud);
+            assertLiteralTableFloor(consumed);
         }
     }
 
     @Test
     public void tablePlayerBubbleKeepsLiteralOutputThroughRealL2() throws Exception {
         for (boolean explicit : new boolean[] {false}) {
-            SceneNode hud = tableConsumerMessage(tableLockSource(), explicit, true, false);
-            SceneNode container = tableConsumerMessage(tableLockSource(), explicit, false, false);
-            assertLiteralTableFloor(hud, true);
-            assertLiteralTableFloor(container, false);
+            ConsumedMessage hud = tableConsumerMessage(tableLockSource(), explicit, true, false);
+            ConsumedMessage container = tableConsumerMessage(tableLockSource(), explicit, false, false);
+            assertLiteralTableFloor(hud);
+            assertLiteralTableFloor(container);
             Assert.assertTrue("窄列必须实际软折（超出源物理行数）",
-                    container.__getChildren().size() > tableLockSource().split("\n").length);
+                    container.node.__getChildren().size() > tableLockSource().split("\n").length);
         }
     }
 
-    private static void assertLiteralTableFloor(SceneNode message, boolean hud) {
+    private static void assertLiteralTableFloor(ConsumedMessage consumed) {
+        SceneNode message = consumed.node;
+        boolean hud = consumed.hud;
+        int ceiling = consumed.clamp.getBubbleMaxLines();
         List<SceneNode> rows = message.__getChildren();
         StringBuilder all = new StringBuilder();
         for (SceneNode row : rows) {
@@ -989,12 +1005,12 @@ public class ChatMessageListTest {
         Assert.assertTrue("表头 pipe 必须仍是字面", all.toString().contains("| A | B |"));
         Assert.assertTrue("delimiter 不可被 TABLE 布局吞掉", all.toString().contains("| --- | --- |"));
         if (hud) {
-            Assert.assertEquals("真实消费者 HUD 八行预算", ChatCardComposer.HUD_MAX_LINES, rows.size());
-            Assert.assertTrue("跨预算末行省略", all.toString().endsWith(ChatCardComposer.ELLIPSIS));
+            Assert.assertEquals("真实消费者 HUD 可见行数上限", ceiling, rows.size());
+            Assert.assertTrue("跨上限末行省略", all.toString().endsWith(ChatCardComposer.ELLIPSIS));
             Assert.assertFalse("HUD 必须真截断尾文", all.toString().contains("after-table"));
         } else {
             Assert.assertTrue("展开容器保留完整尾文", all.toString().endsWith("after-table"));
-            Assert.assertTrue("展开容器超过 HUD 预算", rows.size() > ChatCardComposer.HUD_MAX_LINES);
+            Assert.assertTrue("展开容器超过 HUD 上限", rows.size() > ceiling);
             for (SceneNode row : rows) {
                 Assert.assertEquals(0, row.getMaxLines());
                 Assert.assertFalse(row.isEllipsis());
@@ -1002,7 +1018,20 @@ public class ChatMessageListTest {
         }
     }
 
-    private static SceneNode tableConsumerMessage(String source, boolean explicit, boolean hud,
+    /** 表格用例的消息消费结果：节点 + 该形态真实使用的钳制（断言取消费者实际上限，不镜像公式）。 */
+    private static final class ConsumedMessage {
+        final SceneNode node;
+        final boolean hud;
+        final ChatCardComposer.HudClamp clamp;
+
+        ConsumedMessage(SceneNode node, boolean hud, ChatCardComposer.HudClamp clamp) {
+            this.node = node;
+            this.hud = hud;
+            this.clamp = clamp;
+        }
+    }
+
+    private static ConsumedMessage tableConsumerMessage(String source, boolean explicit, boolean hud,
             boolean fixedWrap) throws Exception {
         final ChatSceneController controller = fixedWrap ? linkController()
                 : new ChatSceneController(FIXED, selfAlex(), PARSER,
@@ -1038,7 +1067,8 @@ public class ChatMessageListTest {
                     fixedWrap ? FIXED_MEASURER : ChatSceneController.uiLibSegmentMeasurer(),
                     null, fixedWrap ? FIXED_WRAP : null);
             renderer.setBubbleMaxWidthPx(ChatSceneController.bubbleMaxWidthPxFor(400));
-            handle = renderer.mount(rt, list, controller.groupsSignal(), ChatMessageList.Style.container(),
+            handle = renderer.mount(rt, list, controller.groupsSignal(),
+                    ChatMessageList.Style.container(),
                     new java.util.IdentityHashMap<SceneNode, ChatLineRecord>(), controller.frameMillisSignal());
             rt.flush();
             group = list.__getChildren().get(0);
@@ -1050,7 +1080,7 @@ public class ChatMessageListTest {
         if (handle != null) {
             handle.dispose();
         }
-        return message;
+        return new ConsumedMessage(message, hud, controller.hudClamp());
     }
 
     private static String tableNodeSnapshot(SceneNode node) throws Exception {
@@ -1129,10 +1159,10 @@ public class ChatMessageListTest {
     }
 
     /**
-     * 锁 8 同源段（行序列与非注入路径同源）：视图喂进 pipeline 的字符串 = args[0] 原文、
-     * 定行宽 = 系统行口径的 compose maxLine（chatWidth − 2×paddingX）、字号 = font-system
+     * 同源段（行序列与非注入路径同源）：视图喂进 pipeline 的字符串 = args[0] 原文、
+     * 定行宽 = 无气泡行的切行宽（内容框宽,取自生产口径）、字号 = font-system
      * ——与直连消费者拿同一串/同宽/同字号调管道（非注入路径）在替身换行下逐行等值。
-     * 长度刻意不触发 HUD 8 行截断（截断语义另有既有锁钉），保证比对落在同一层产物上。
+     * 长度刻意不触发 HUD 行数截断（截断语义另有既有锁钉），保证比对落在同一层产物上。
      */
     @Test
     public void markdownLineSequenceMatchesDirectPipelineCallSameStringSameWidth() {
@@ -1154,15 +1184,16 @@ public class ChatMessageListTest {
         List<SceneNode> viewLines = messageNode.__getChildren();
 
         ChatMarkdownPipeline direct = new ChatMarkdownPipeline();
-        int maxLine = Math.max(1, ChatMarkdownSettings.chatWidthFor(400)
-                - 2 * ChatMarkdownSettings.getBubblePaddingX());
+        // 换行宽取消费者实际使用的无气泡行口径(内容框宽),不在这里镜像一份公式
+        int maxLine = controller.wrapWidths().getNoBubbleWidthPx();
         List<ChatMarkdownPipeline.RenderedLine> sameSource = direct.layout(md,
                 ChatMarkdownSettings.getSystemTextArgb(), maxLine,
                 ChatMarkdownSettings.getSystemFontSizePx(), 1.0F, null, FIXED_WRAP);
         Assert.assertTrue("反 ∅：内容足够长必然多行，实测 " + viewLines.size(),
                 viewLines.size() > 1);
-        Assert.assertTrue("工况自检（反空跑）：本例必须不触 HUD 截断，实测 " + viewLines.size(),
-                viewLines.size() < ChatCardComposer.HUD_MAX_LINES);
+        int ceiling = controller.hudClamp().getNoBubbleMaxLines();
+        Assert.assertTrue("工况自检（反空跑）：本例必须不触 HUD 截断，实测 " + viewLines.size()
+                + " / 上限 " + ceiling, viewLines.size() < ceiling);
         Assert.assertEquals("同串同宽同行数(注入内容与直连消费者同一管道)",
                 sameSource.size(), viewLines.size());
         for (int i = 0; i < sameSource.size(); i++) {
@@ -1179,12 +1210,12 @@ public class ChatMessageListTest {
     }
 
     /**
-     * 锁 8 补丁（HUD 8 行截断平价）：markdown 系统行与气泡行同走 clampHudLines——
-     * 超 8 行时视图取前 8 行、末行补省略号（§5.4 验收 22 语义），与非注入路径直调
-     * 管道 + clamp 的产物逐行等值。配上一条「不触截断」的同源锁合成完整口径。
+     * HUD 可见行数钳制平价：markdown 系统行与气泡行同走 clampHudLines——超上限时视图取前 N 行、
+     * 末行补省略号，上限 N 由控制器按当前视口与倍率推导（400×300 → 150px ÷ 系统行高 16 = 9 行）。
+     * 配上一条「不触截断」的同源锁合成完整口径。
      */
     @Test
-    public void markdownRowHonoursHudEightLineClampExactlyLikePipeline() {
+    public void markdownRowHonoursDerivedHudLineCeilingExactlyLikePipeline() {
         ChatSceneController controller = linkController();
         controller.setHostViewport(400, 300);
         StringBuilder body = new StringBuilder();
@@ -1201,15 +1232,101 @@ public class ChatMessageListTest {
         rt.flush();
         List<SceneNode> viewLines = hudGroups(root).get(0).__getChildren().get(0)
                 .__getChildren();
-        Assert.assertEquals("HUD 形态恒 ≤ 8 视觉行", ChatCardComposer.HUD_MAX_LINES,
-                viewLines.size());
+        int ceiling = controller.hudClamp().getNoBubbleMaxLines();
+        Assert.assertEquals("HUD 形态恒 ≤ 推导上限", ceiling, viewLines.size());
         StringBuilder tail = new StringBuilder();
-        for (TextSegment segment : viewLines.get(7).getSegments()) {
+        for (TextSegment segment : viewLines.get(ceiling - 1).getSegments()) {
             tail.append(segment.getText());
         }
         Assert.assertTrue("末行带省略号(截断语义与气泡行同源): " + tail,
                 tail.toString().endsWith(ChatCardComposer.ELLIPSIS));
     }
+
+    /**
+     * HUD 可见行数上限随视口动态推导(真机「离开聊天框进入世界后系统消息显示不全」的回归判据):
+     * 同一条超长系统消息,视口高 300 / 720 各自渲染出「预算 ÷ 系统行高」行,高视口显示更多;
+     * 容器形态不截断,自然行数必须超过任一 HUD 上限——三种口径一次钉住,全程不引用写死的条数。
+     */
+    @Test
+    public void hudVisibleLinesFollowViewportBudgetNotFixedCount() {
+        StringBuilder body = new StringBuilder();
+        for (int i = 0; i < 400; i++) {
+            body.append("字").append(i);
+        }
+        String text = body.toString();
+        int[] heights = new int[] {300, 720};
+        int[] rendered = new int[heights.length];
+        for (int index = 0; index < heights.length; index++) {
+            ChatSceneController controller = controller();
+            controller.setHostViewport(400, heights[index]);
+            controller.history().append(new ChatLineRecord(new ChatComponentText(text), 1, T0));
+            controller.notifyDataChanged();
+            SceneRuntime rt = SceneTestEnvironments.runtime(new FixedTextMeasurer(8, 16));
+            SceneNode root = controller.buildContent(rt);
+            rt.flush();
+            List<SceneNode> lines = hudGroups(root).get(0).__getChildren().get(0).__getChildren();
+            Assert.assertEquals("视口高 " + heights[index] + "：HUD 行数 = 该视口预算派生上限",
+                    controller.hudClamp().getNoBubbleMaxLines(), lines.size());
+            rendered[index] = lines.size();
+        }
+        Assert.assertTrue("反空跑：高视口必须显示更多行（" + rendered[0] + " -> " + rendered[1] + "）",
+                rendered[1] > rendered[0]);
+
+        // 容器形态(容器全量信号,不截断):自然行数必须超过 HUD 上限,即"容器看全、HUD 截断"的差异
+        ChatSceneController containerController = controller();
+        containerController.setHostViewport(400, heights[1]);
+        containerController.history().append(new ChatLineRecord(new ChatComponentText(text), 1, T0));
+        containerController.notifyDataChanged();
+        SceneRuntime containerRt = SceneTestEnvironments.runtime(new FixedTextMeasurer(8, 16));
+        SceneNode list = SceneNode.column().setHitTestable(false);
+        SceneListHandle handle = containerController.messageList().mount(containerRt, list,
+                containerController.containerGroupsSignal(),
+                ChatMessageList.Style.container(),
+                new java.util.IdentityHashMap<SceneNode, ChatLineRecord>(),
+                containerController.frameMillisSignal());
+        containerRt.flush();
+        int natural = list.__getChildren().get(0).__getChildren().get(0).__getChildren().size();
+        handle.dispose();
+        Assert.assertTrue("容器形态完整显示:自然行数 " + natural + " > HUD 上限 " + rendered[1],
+                natural > rendered[1]);
+    }
+
+    /**
+     * 建树后改视口:根宽与可见行数上限都必须跟着刷新(失效通道的回归判据)。
+     *
+     * <p>独立复核实测:删掉 {@code setHostViewport} 里的组信号失效(notifyDataChanged)后,渲染行数
+     * 停在旧上限、而 {@code hudClamp()} 已是新值;删掉根宽同步则缩放后仍按旧宽排版——两种删法
+     * 当时都能让整套 chat3 用例全绿。本用例专为这两条通道而生:先窄矮建树、再改到宽高,
+     * 既比对根宽也比对行数。</p>
+     */
+    @Test
+    public void resizeAfterBuildRefreshesRootWidthAndVisibleCeiling() {
+        StringBuilder body = new StringBuilder();
+        for (int i = 0; i < 800; i++) {
+            body.append("字").append(i);
+        }
+        ChatSceneController controller = controller();
+        controller.setHostViewport(400, 300);
+        controller.history().append(new ChatLineRecord(new ChatComponentText(body.toString()), 1, T0));
+        controller.notifyDataChanged();
+        SceneRuntime rt = SceneTestEnvironments.runtime(new FixedTextMeasurer(8, 16));
+        SceneNode root = controller.buildContent(rt);
+        rt.flush();
+        int beforeLines = hudGroups(root).get(0).__getChildren().get(0).__getChildren().size();
+        Assert.assertEquals("初始行数 = 该视口上限", controller.hudClamp().getNoBubbleMaxLines(),
+                beforeLines);
+
+        controller.setHostViewport(1600, 720);
+        rt.flush();
+        Assert.assertEquals("根宽随视口同步(否则缩放后仍按旧宽排版)",
+                ChatMarkdownSettings.chatWidthFor(1600), root.getPreferredWidth());
+        int afterLines = hudGroups(root).get(0).__getChildren().get(0).__getChildren().size();
+        Assert.assertEquals("视口变大后行数 = 新上限", controller.hudClamp().getNoBubbleMaxLines(),
+                afterLines);
+        Assert.assertTrue("反空跑：新上限必须真的更大(" + beforeLines + " -> " + afterLines + ")",
+                afterLines > beforeLines);
+    }
+
     /** 对照锁（防误锁）：普通系统行仍居中、仍走 § 解析路（既有行为一字未动）。 */
     @Test
     public void ordinarySystemRowStillCenteredVanillaPath() {
@@ -1321,7 +1438,7 @@ public class ChatMessageListTest {
     }
 
     @Test
-    public void hudLineNodesCarryMaxLinesAndEllipsisAndClampToEight() {
+    public void hudLineNodesCarryMaxLinesAndEllipsisAtDerivedCeiling() {
         ChatSceneController controller = controller();
         controller.setHostViewport(400, 300);
         controller.history().append(new ChatLineRecord(
@@ -1332,13 +1449,15 @@ public class ChatMessageListTest {
         rt.flush();
 
         List<SceneNode> lineNodes = hudLineNodesOfFirstGroup(root);
-        Assert.assertEquals("HUD 单条消息 10 行截断为 8 行", 8, lineNodes.size());
+        // 上限 = 该视口与倍率下的推导值(400×300 → 预算 150px ÷ 气泡行高 18 = 8 行),不是写死的条数
+        int ceiling = controller.hudClamp().getBubbleMaxLines();
+        Assert.assertEquals("HUD 单条消息截断到推导上限", ceiling, lineNodes.size());
         for (SceneNode lineNode : lineNodes) {
-            Assert.assertEquals("HUD 行节点 maxLines=8", 8, lineNode.getMaxLines());
+            Assert.assertEquals("HUD 行节点 maxLines = 推导上限", ceiling, lineNode.getMaxLines());
             Assert.assertTrue("HUD 行节点省略号语义开启", lineNode.isEllipsis());
         }
         // 末行段流文本以省略号收尾(截断发生在 L2 displayLines,段流原样携带)
-        List<TextSegment> lastSegments = lineNodes.get(7).getSegments();
+        List<TextSegment> lastSegments = lineNodes.get(ceiling - 1).getSegments();
         Assert.assertEquals(1, lastSegments.size());
         Assert.assertTrue("末行以省略号收尾",
                 lastSegments.get(0).getText().endsWith(ChatCardComposer.ELLIPSIS));
@@ -1356,7 +1475,8 @@ public class ChatMessageListTest {
         Map<SceneNode, ChatLineRecord> registry = new java.util.IdentityHashMap<SceneNode, ChatLineRecord>();
         ChatMessageList renderer = new ChatMessageList(PARSER);
         SceneListHandle handle = renderer.mount(rt, list, controller.groupsSignal(),
-                ChatMessageList.Style.container(), registry, controller.frameMillisSignal());
+                ChatMessageList.Style.container(), registry,
+                controller.frameMillisSignal());
         rt.flush();
 
         SceneNode group = list.__getChildren().get(0);
@@ -1397,7 +1517,8 @@ public class ChatMessageListTest {
         Map<SceneNode, ChatLineRecord> registry = new java.util.IdentityHashMap<SceneNode, ChatLineRecord>();
         ChatMessageList renderer = new ChatMessageList(PARSER, null, processor);
         SceneListHandle handle = renderer.mount(rt, list, controller.groupsSignal(),
-                ChatMessageList.Style.container(), registry, controller.frameMillisSignal());
+                ChatMessageList.Style.container(), registry,
+                controller.frameMillisSignal());
         rt.flush();
 
         SceneNode group = list.__getChildren().get(0);
@@ -1738,10 +1859,12 @@ public class ChatMessageListTest {
     @Test
     public void systemMessageLineWidthIsNotClampedToBubbleContentWidth() {
         // K3 摘要第 4 条:系统消息行 pinned width 被钳到 maxBubble−2×paddingX(=99@视口400),
-        // 行实宽 140 却被钉 99 → 居中几何错位;修复后系统行钉实宽(气泡行钳宽语义不变)
+        // 行实宽 140 却被钉 99 → 居中几何错位;修复后系统行钉实宽。
+        // 现行口径再进一步:无气泡行的切行宽 = 内容框宽本身(160@视口400),不再按气泡外宽上限
+        // (减 2×气泡内边距)少算一截——钉宽随切行宽同源,故这里取消费者的真实口径而非镜像公式
         ChatSceneController controller = linkController();
         controller.setHostViewport(400, 300);
-        // 无空格长串:字符级断行,首行 35 字符 × 4px = 140(不会被词边界回退打断)
+        // 无空格长串:字符级断行,首行 = 内容框宽(40 字符 × 4px = 160,不会被词边界回退打断)
         controller.history().append(new ChatLineRecord(new ChatComponentText(
                 "[公告]" + longMessageBody()), 1, T0));
         controller.notifyDataChanged();
@@ -1751,9 +1874,15 @@ public class ChatMessageListTest {
         new SceneLayoutEngine(new FixedTextMeasurer(8, 16)).layout(root, new Constraints(400, 300));
         SceneNode systemMessage = hudGroups(root).get(0).__getChildren().get(0);
         SceneNode lineNode = systemMessage.__getChildren().get(0);
-        Assert.assertEquals("系统行钉实宽(不钳 99)", 140,
+        // 期望值取自生产函数 + 显式视口,不引用 controller.wrapWidths() 那个与实现同一求值口:
+        // 独立复核实测,只断言"比气泡内宽大"时把无气泡宽改回气泡口径仍能全绿(该回归零覆盖)
+        int contentWidth = ChatMarkdownSettings.chatWidthFor(400);
+        int bubbleCaliber = Math.max(1, contentWidth - 2 * ChatMarkdownSettings.getBubblePaddingX());
+        Assert.assertTrue("反空跑：两种口径在本视口下必须可区分(内容框宽 " + contentWidth
+                + " vs 气泡口径 " + bubbleCaliber + ")", bubbleCaliber != contentWidth);
+        Assert.assertEquals("系统行钉实宽(内容框宽,不是气泡外宽上限)", contentWidth,
                 ((LayoutBox) lineNode.getCachedLayout()).getWidth());
-        Assert.assertEquals("系统组按实宽收缩居中", 140,
+        Assert.assertEquals("系统组按实宽收缩居中", contentWidth,
                 ((LayoutBox) systemMessage.getCachedLayout()).getWidth());
     }
 
@@ -2238,7 +2367,7 @@ public class ChatMessageListTest {
         StringBuilder builder = new StringBuilder();
         for (int i = 0; i < 20; i++) {
             builder.append("续行长正文"); // 100 字：兜底大字形(~19px)≈6 视觉行、注册后小字形(~3px)≈2 行，
-                                          // 两种度量模式下「续行族 >= 2」与「HUD 8 行截断」都同时成立。
+                                          // 两种度量模式下「续行族 >= 2」与「HUD 可见行数截断」都同时成立。
         }
         String bodyB = builder.toString();
         // 生产形装配：度量 = 真机同款 uiLibSegmentMeasurer（与 L2 换行同源，钳宽才真触发），
@@ -3423,8 +3552,8 @@ public class ChatMessageListTest {
             Map<SceneNode, ChatLineRecord> registry =
                     new java.util.IdentityHashMap<SceneNode, ChatLineRecord>();
             SceneListHandle handle = controller.messageList().mount(rt, list,
-                    controller.groupsSignal(), ChatMessageList.Style.container(), registry,
-                    controller.frameMillisSignal());
+                    controller.groupsSignal(), ChatMessageList.Style.container(),
+                    registry, controller.frameMillisSignal());
             rt.flush();
             FixedTextMeasurer measurer = new FixedTextMeasurer(8, 16);
             new SceneLayoutEngine(measurer).layout(list, new Constraints(400, 300));
@@ -3486,7 +3615,8 @@ public class ChatMessageListTest {
         SceneNode list = SceneNode.column().setHitTestable(false);
         Map<SceneNode, ChatLineRecord> registry = new java.util.IdentityHashMap<SceneNode, ChatLineRecord>();
         controller.messageList().mount(rt, list, controller.groupsSignal(),
-                ChatMessageList.Style.container(), registry, controller.frameMillisSignal());
+                ChatMessageList.Style.container(), registry,
+                controller.frameMillisSignal());
         rt.flush();
         FixedTextMeasurer measurer = new FixedTextMeasurer(8, 16);
         new SceneLayoutEngine(measurer).layout(list, new Constraints(400, 300));

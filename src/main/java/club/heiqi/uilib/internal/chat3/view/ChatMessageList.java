@@ -232,26 +232,41 @@ public final class ChatMessageList {
         }
     }
 
-    /** 消息列表形态:HUD(紧凑 + TTL 淡出)与容器(宽松 + 恒显)的唯一差异。 */
+    /** 消息列表形态:HUD(紧凑 + TTL 淡出 + 可见行数钳制)与容器(宽松 + 恒显)的唯一差异。 */
     public static final class Style {
 
         private final int groupGapPx;
         private final boolean ttlFade;
+        private final ChatCardComposer.HudClamp clamp;
 
-        private Style(int groupGapPx, boolean ttlFade) {
+        private Style(int groupGapPx, boolean ttlFade, ChatCardComposer.HudClamp clamp) {
             this.groupGapPx = groupGapPx;
             this.ttlFade = ttlFade;
+            this.clamp = clamp;
         }
 
         /** HUD 形态:组间紧密堆叠 + 12s 存活淡出(默认 TTL 12000/easeInQuad 800ms);
-         *  TB1 常驻模式(hudPersistMessages=true,默认):淡出在烘焙处关闭,enter 动画保留。 */
-        public static Style hud() {
-            return new Style(Math.max(0, ChatMarkdownSettings.getGroupGapHudPx()), true);
+         *  TB1 常驻模式(hudPersistMessages=true,默认):淡出在烘焙处关闭,enter 动画保留。
+         *
+         * @param clamp 可见行数钳制(按当前视口与倍率推导;本层不留常量兜底)
+         */
+        public static Style hud(ChatCardComposer.HudClamp clamp) {
+            return new Style(Math.max(0, ChatMarkdownSettings.getGroupGapHudPx()), true, require(clamp));
         }
 
-        /** 容器形态:组间宽松 + 恒显不淡出。 */
+        /** 容器形态:组间宽松 + 恒显不淡出(不截断;内嵌滚动窗口按
+         * {@link ChatMarkdownSettings#getInternalScrollLines()} 取紧凑值——容器外层可滚)。 */
         public static Style container() {
-            return new Style(Math.max(0, ChatMarkdownSettings.getGroupGapContainerPx()), false);
+            return new Style(Math.max(0, ChatMarkdownSettings.getGroupGapContainerPx()), false, null);
+        }
+
+        /** 形态必须带预算:上限随视口/倍率变化,渲染层不接受"无上下文"状态。 */
+        private static ChatCardComposer.HudClamp require(ChatCardComposer.HudClamp clamp) {
+            if (clamp == null) {
+                throw new IllegalArgumentException(
+                        "消息列表形态必须注入 HudClamp（上限随视口与倍率推导，渲染层不留常量兜底）");
+            }
+            return clamp;
         }
 
         /** @return 组间距(px) */
@@ -262,6 +277,11 @@ public final class ChatMessageList {
         /** @return 是否启用 TTL 淡出 */
         public boolean isTtlFade() {
             return ttlFade;
+        }
+
+        /** @return 可见行数钳制(HUD 形态恒非 null;容器形态 null = 不截断) */
+        public ChatCardComposer.HudClamp getClamp() {
+            return clamp;
         }
     }
 
@@ -903,6 +923,13 @@ public final class ChatMessageList {
                 : ChatMarkdownSettings.getChatLineHeightPx();
         int fontSize = ChatFontMetrics.scalePx(rt, declaredFontSize);
         int lineHeight = ChatFontMetrics.scalePx(rt, declaredLineHeight);
+        // HUD 形态:可见行数上限(按当前视口与倍率推导,见 Style#getClamp),截断与内嵌窗口同值——
+        // 聊天关闭态没有输入源,滚轮滚不动,窗口就得开到上限一次看够。
+        // 容器形态:不截断(clamp=null),内嵌窗口取紧凑值,消息本身体积小、由容器外层滚动承载。
+        final ChatCardComposer.HudClamp clamp = style.getClamp();
+        final int visibleMaxLines = clamp == null ? 0 : clamp.maxLinesFor(system || markdownSystem);
+        final int internalScrollLines = clamp == null
+                ? ChatMarkdownSettings.getInternalScrollLines() : visibleMaxLines;
         int paddingX = ChatMarkdownSettings.getBubblePaddingX();
         int paddingY = ChatMarkdownSettings.getBubblePaddingY();
         AlignSelf align;
@@ -1104,7 +1131,7 @@ public final class ChatMessageList {
                 // 表格显式消息及 display 数学内容复用同一滚动宿主；普通消息保留历史行路。
                 messageNode.setFillParentWidth(true).setWidthSizing(SceneNode.WidthSizing.FILL);
                 ChatMarkdownContent.Result content = ChatMarkdownContent.create(rt,
-                        () -> ChatFontMetrics.scalePx(rt, ChatCardComposer.HUD_MAX_LINES * declaredLineHeight),
+                        () -> ChatFontMetrics.scalePx(rt, internalScrollLines * declaredLineHeight),
                         !style.isTtlFade(), declaredFontSize,
                         width -> markdown.layoutContent(message.getDisplayText(),
                                 baseTextColor, width, fontSize, rt.fontScale(), segmentPostProcessor),
@@ -1138,10 +1165,10 @@ public final class ChatMessageList {
                     : markdown.layout(message.getDisplayText(), baseTextColor,
                             textWrapWidthPx, fontSize, rt.fontScale(), segmentPostProcessor, segmentFlowWrapper);
             if (markdownLines != null && style.isTtlFade()) {
-                // T8 设计稿 §5.4(验收 22):HUD 形态 8 行截断 + 末行省略号(M5 起作用于
-                // L2 视觉行;行节点级 maxLines/ellipsis 防御仍保留在下方构建处)
+                // HUD 形态可见行数钳制 + 末行省略号(M5 起作用于 L2 视觉行;上限由控制器按
+                // 当前视口与倍率推导,见 Style#getClamp;行节点级 maxLines/ellipsis 防御在下方构建处)
                 markdownLines = ChatMarkdownPipeline.clampHudLines(markdownLines, segmentMeasurer,
-                        fontSize, textWrapWidthPx);
+                        fontSize, textWrapWidthPx, visibleMaxLines);
             }
             int lineCount = system ? displayLines.size() : markdownLines.size();
             // 跨显示行 URL 续链(仅系统消息;每条消息独立,长 URL 被字符硬断时才真正开放)
@@ -1368,12 +1395,12 @@ public final class ChatMessageList {
                     }
                     nodeForReapply.setPreferredWidth(Math.max(1, width));
                 });
-                // T8 设计稿 §5.4(验收 22):HUD 形态行节点携带 maxLines=8 + 省略号语义;
-                // 实际行数截断:气泡路在 ChatMarkdownPipeline.clampHudLines(L2 视觉行 8 行 +
+                // HUD 形态行节点携带 maxLines = 当前可见上限 + 省略号语义;
+                // 实际行数截断:气泡路在 ChatMarkdownPipeline.clampHudLines(L2 视觉行取上限 +
                 // 末行省略号),系统路在 ChatCardComposer(displayLines 上限);此处为节点级
                 // 语义一致 + 防御(行文本含换行符时 SceneLineClamp 生效);容器形态不设。
                 if (style.isTtlFade()) {
-                    lineNode.setMaxLines(ChatCardComposer.HUD_MAX_LINES)
+                    lineNode.setMaxLines(visibleMaxLines)
                             .setEllipsis(true);
                 }
                 if (quoteLine) {

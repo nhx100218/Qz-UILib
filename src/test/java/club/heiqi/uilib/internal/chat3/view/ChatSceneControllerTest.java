@@ -180,7 +180,8 @@ public class ChatSceneControllerTest {
         Map<SceneNode, ChatLineRecord> registry = new IdentityHashMap<SceneNode, ChatLineRecord>();
         ChatMessageList renderer = new ChatMessageList(PARSER);
         SceneListHandle handle = renderer.mount(rt, list, controller.groupsSignal(),
-                ChatMessageList.Style.container(), registry, controller.frameMillisSignal());
+                ChatMessageList.Style.container(), registry,
+                controller.frameMillisSignal());
         rt.flush();
 
         Assert.assertEquals("外部注册表应登记消息节点", 1, registry.size());
@@ -931,7 +932,8 @@ public class ChatSceneControllerTest {
                 + 2 * ChatMarkdownSettings.getBubblePaddingY()
                 + 3 * ChatMarkdownSettings.getChatLineHeightPx();
         int gap = ChatMarkdownSettings.getGroupGapHudPx();
-        int maxHeight = (int) Math.round(400 * ChatMarkdownSettings.getHudMaxHeightRatio());
+        // 预算取生产派生函数(不镜像比例乘法:调比例时这里会跟着变,不会静默分叉)
+        int maxHeight = ChatMarkdownSettings.hudHeightBudgetFor(400);
         Assert.assertTrue("2 组应在上限内", 2 * groupHeight + gap <= maxHeight);
         Assert.assertTrue("3 组应超上限", 3 * groupHeight + 2 * gap > maxHeight);
 
