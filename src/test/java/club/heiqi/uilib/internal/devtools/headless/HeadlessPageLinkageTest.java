@@ -488,6 +488,254 @@ public class HeadlessPageLinkageTest {
     }
 
     /**
+     * 点击计数决定选区粒度（双击选词 / 三击选整行）与指针取消的**端到端**判据
+     * （playground 单行页 / 多行页各一遍）。
+     *
+     * <p>守的交付（覆盖事实按实测口径写，不夸大）：</p>
+     * <ul>
+     *   <li>{@code dblclick} <b>语句</b>此前在设备层与页面级都零覆盖 ——
+     *       {@code HeadlessInputDeviceTest} 全类无 {@code dblclick} 用例；</li>
+     *   <li>{@code cancel} <b>语句</b>在设备层只在修饰键用例里顺带钉过载荷
+     *       （{@code pointerModifiersFollowHeldKeysWithoutSwapping} 的四条指针路径），
+     *       而文本控件的 {@code POINTER_CANCEL} 分支在控件层此前**零覆盖**
+     *       （{@code SceneTextInputTest} / {@code SceneTextAreaTest} 均无该事件）；</li>
+     *   <li>控件层的 {@code clickCount == 2 / >= 3} 分支**已有**单点单元判据
+     *       （{@code SceneTextInputTest.doubleClickSelectsWord} / {@code tripleClickSelectsWholeLine}、
+     *       {@code SceneTextAreaTest.doubleClickSelectsWord} / {@code tripleClickSelectsLine}）——
+     *       本用例补的是「真实页面栈 + 真实指针合成链路 + 像素产物」这一层，不是唯一防线
+     *       （独立审查实测：把 {@code == 2} 改成 {@code == 99} 会同时红 5 条既有单元用例）；</li>
+     *   <li>真正只有端到端能发现的是<b>指针取消的语义</b>（cancel 后移动不扩展、cancel 不得丢弃
+     *       已拖出的选区）与词 / 逻辑行粒度在真实合成链路上的表现（与
+     *       {@link #shiftClickExtendsSelectionAndCtrlClickDoesNot()} 同族）。</li>
+     * </ul>
+     *
+     * <h4>判据一：双击按<b>词</b>粒度（等价物对拍）</h4>
+     * <p>同一个词内的两个不同落点必须给出**逐字节相同**的产物；而同点的**单击**必须彼此不同
+     * （否则同词等价是空跑：两下都没命中控件也会相等）。跨词必须不同。另有反空跑自检：
+     * 双击产物不得等于同点单击产物 —— 双击退化成两次独立单击时它会红。</p>
+     *
+     * <p>实测（1280x720、fs=16、最小集）：单行页 {@code 240..270} 同落 {@code Hello} 词内、
+     * {@code 280} 落在空格、{@code 290..300} 落在 {@code Qz}；多行页 {@code 250..270} 同落
+     * {@code 第一行}、{@code 290} 落在词间分隔符、{@code 310} 落在 {@code 欢迎使用}。
+     * 落点是从「双击产物随 x 变化的分段恒定结构」里量出来的，不是按字宽推算的。</p>
+     *
+     * <h4>判据二：落分隔符时折叠（不得误选相邻词）</h4>
+     * <p>双击产物必须等于**同一点单击**（折叠为插入符），且不得等于左右任一词的产物 ——
+     * 「折叠」与「误选邻居」在像素上完全不同，后者会红。</p>
+     *
+     * <h4>判据三：三击按<b>整行</b>粒度（oracle 分页取）</h4>
+     * <p>两页都出一次 <b>Ctrl+A</b>（完全独立的键盘路径）：单行控件上「整行」就是「全选」，
+     * 于是它当**等价物** oracle（两条路径的判定分支互不共用，等价物对拍因此有判别力）；
+     * 多行控件上三击是**逻辑行**、Ctrl+A 是全选，两者在产物上可区分 —— 于是它反过来当
+     * **排除式** oracle（三击不得等于全选），粒度再由**同逻辑行、不同词**的另一个落点钉住。
+     * 两个 oracle 合起来才排得掉「三击退化成全选」与「三击退化成选词」（后者是独立审查
+     * 指出的强度缺口：只取同词两点时，选词回归在两条相等式上都为真）。两页都另有反空跑自检：
+     * 三击产物不得等于同点双击产物。</p>
+     *
+     * <h4>判据四：{@code cancel} 终止拖选、且不丢弃已拖出的选区</h4>
+     * <p>三条：①「拖到 A → cancel」必须与<b>正常松开</b>（{@code up}）逐字节相同 —— cancel 是
+     * 「结束手势」不是「撤销选择」，把 cancel 改成「清锚 + 折叠到 caret 0」的回归会在这里红
+     * （独立审查实测：缺这一条时该变异整套断言全绿）；②「拖到 A → cancel → 移到 B」必须与
+     * 「拖到 A → cancel」相同（cancel 之后的指针移动不再扩展选区）；③「拖到 A → 移到 B」
+     * （不 cancel）必须与之不同（反空跑）。四条脚本取**相同帧数**（各 12 次推进）：这是防御性
+     * 写法，不是必要条件 —— 实测收尾空帧数并不改变产物（审查者实测 {@code click} 后 {@code wait}
+     * 0/6/12/18/24/32/40 同摘要、{@code cancel} 后 0/9/15/24/40 同摘要），即插入符闪烁相位不参与渲染。</p>
+     *
+     * <p>实测摘要（每个脚本 2/2 次逐字节相同；单行页 / 多行页）：同词双击 {@code 5c7a9c51d7ff} /
+     * {@code a38154d23f13}、跨词 {@code 2163691c990a} / {@code e16e9078867c}、分隔符折叠
+     * {@code 930397454983} / {@code ff9494dcf548}、三击 {@code 4fb09e354db8} / {@code 66ae97fa4659}、
+     * {@code Ctrl+A} 全选 {@code 4fb09e354db8} / {@code f3cf6565bd64}（单行页三击 = 全选；
+     * 多行页两者必须不同，否则「三击退化成全选」会在相等式下静默通过）；「拖 280→300 → cancel」
+     * 与「拖 280→300 → 正常松开」同为 {@code 12b3305e2f9d} / {@code 66258b21291d}，
+     * 不 cancel 的对照 {@code 52dbc11df0d2} / {@code 8a19c4e6395f}。单用例耗时约 75 s
+     * （作者一次 74.3 s；审查者三次 73.3 / 76.0 / 77.7 s，属方差）。图像侧另有独立验证：
+     * 审查者用纯标准库 PNG 解码做逐像素差分 —— 双击画出整词高亮带（单行页 {@code x=242..284}
+     * 即 {@code Hello}）、分隔符落点与同点单击 {@code diff_px=0}、三击高亮只落在第一条逻辑行
+     * （{@code y=176..191}），而 Ctrl+A 还覆盖到 {@code y=287}。</p>
+     */
+    @Test
+    public void doubleClickSelectsWordsTripleClickSelectsLinesAndCancelAbortsDrag() throws Exception {
+        assertWordAndCancelSemantics(1, "single", 250, 270, 300, 280);
+        assertWordAndCancelSemantics(2, "multiline", 250, 270, 310, 290);
+    }
+
+    /**
+     * 端到端「双击选词 + cancel 终止拖选」（给定 playground 页下标与实测落点）。
+     *
+     * @param pageIndex   页下标（1=单行文本、2=多行文本）
+     * @param label       产物名后缀
+     * @param wordX       词内落点 A
+     * @param sameWordX   词内落点 B（与 A 同词）
+     * @param otherWordX  另一个词内的落点
+     * @param separatorX  词间分隔符上的落点
+     */
+    private static void assertWordAndCancelSemantics(int pageIndex, String label,
+                                                     int wordX, int sameWordX, int otherWordX, int separatorX)
+            throws Exception {
+        String stem = "linkage-word-" + label;
+        // 失败消息带页标识：helper 被两页复用，page2 单独红时消息必须能自证是哪一页（独立审查 R4）。
+        String where = label + "(page-index=" + pageIndex + ") ";
+        String[] shared = {"--page=playground", "--page-index=" + pageIndex};
+
+        // 脚本先落变量，再经 renderDistinct 成组出图 —— 自检在 helper 内部比**实际传入的脚本**：
+        // 只比「落点参数不同」（第一版）或比「变量定义」（第二版）都堵不住调用点被改成同一变量的
+        // 自伤，两种形态都实测过（独立审查 M6 与 Lead 复核）。
+        String scriptClickA = clickAt(wordX);
+        String scriptClickB = clickAt(sameWordX);
+        String scriptWordA = doubleClickAt(wordX);
+        String scriptWordB = doubleClickAt(sameWordX);
+        String scriptWordOther = doubleClickAt(otherWordX);
+        String scriptSeparator = doubleClickAt(separatorX);
+        String scriptSeparatorClick = clickAt(separatorX);
+
+        // 等价对拍：同词两点（词粒度）、分隔符双击与同点单击（折叠）—— 两条脚本必须真的不同。
+        String[] wordShots = renderDistinct(new String[] {stem + "-dbl-a", stem + "-dbl-b"},
+                new String[] {scriptWordA, scriptWordB}, shared);
+        String wordA = wordShots[0];
+        String wordB = wordShots[1];
+        String[] separatorShots = renderDistinct(new String[] {stem + "-dbl-sep", stem + "-click-sep"},
+                new String[] {scriptSeparator, scriptSeparatorClick}, shared);
+        String separator = separatorShots[0];
+        String separatorClick = separatorShots[1];
+
+        // 其余三张是**反空跑对照**（不等价），单独出图。
+        String clickA = renderDigest(stem + "-click-a", withScript(scriptClickA, shared));
+        String clickB = renderDigest(stem + "-click-b", withScript(scriptClickB, shared));
+        String wordOther = renderDigest(stem + "-dbl-other", withScript(scriptWordOther, shared));
+
+        Assert.assertNotEquals(where + "自检：同词内的两个落点必须本来就不同 —— 否则下面的词粒度断言是空的："
+                + clickA + " vs " + clickB, clickA, clickB);
+        Assert.assertNotEquals(where + "自检：双击产物不得等于同点单击产物（双击退化成单击会伪装成通过）："
+                + wordA + " vs " + clickA, wordA, clickA);
+        Assert.assertEquals(where + "双击必须按词粒度 —— 同词内两个落点得同一产物：" + wordA + " vs " + wordB,
+                wordA, wordB);
+        Assert.assertNotEquals(where + "跨词双击必须给出不同产物：" + wordA + " vs " + wordOther,
+                wordA, wordOther);
+        Assert.assertEquals(where + "双击落在词间分隔符上必须折叠为单点（等于同点单击）："
+                + separator + " vs " + separatorClick, separatorClick, separator);
+        Assert.assertNotEquals(where + "分隔符上的双击不得误选左侧词：" + separator + " vs " + wordA,
+                separator, wordA);
+        Assert.assertNotEquals(where + "分隔符上的双击不得误选右侧词：" + separator + " vs " + wordOther,
+                separator, wordOther);
+
+        // 判据三：三击 = 选整行。两页都出 Ctrl+A：单行页当**等价物** oracle（整行 == 全选，成组出图
+        // 并自检两条脚本不同）；多行页当**排除式** oracle（三击是逻辑行、不得退化成全文全选），
+        // 粒度由「同逻辑行、不同词」的另一个落点成组钉住 —— 只取同词两点时选词回归仍为真。
+        String scriptTriple = tripleClickAt(wordX);
+        String scriptSelectAll = selectAllAt(wordX);
+        String triple;
+        String selectAll;
+        String tripleOther = null;
+        if (pageIndex == 1) {
+            String[] lineShots = renderDistinct(new String[] {stem + "-triple", stem + "-select-all"},
+                    new String[] {scriptTriple, scriptSelectAll}, shared);
+            triple = lineShots[0];
+            selectAll = lineShots[1];
+        } else {
+            String scriptTripleOther = tripleClickAt(otherWordX);
+            String[] lineShots = renderDistinct(new String[] {stem + "-triple", stem + "-triple-other"},
+                    new String[] {scriptTriple, scriptTripleOther}, shared);
+            triple = lineShots[0];
+            tripleOther = lineShots[1];
+            selectAll = renderDigest(stem + "-select-all", withScript(scriptSelectAll, shared));
+        }
+        Assert.assertNotEquals(where + "自检：三击不得等于同点双击（否则下面的整行断言是空的）："
+                + triple + " vs " + wordA, triple, wordA);
+        if (pageIndex == 1) {
+            Assert.assertEquals(where + "单行控件上三击必须等于 Ctrl+A 全选（两条独立路径的等价物对拍）："
+                    + triple + " vs " + selectAll, selectAll, triple);
+        } else {
+            Assert.assertNotEquals(where + "多行控件上三击是逻辑行、不得退化为全文全选："
+                    + triple + " vs " + selectAll, triple, selectAll);
+            Assert.assertEquals(where + "三击必须按逻辑行粒度 —— 同逻辑行内两个落点得同一产物："
+                    + triple + " vs " + tripleOther, triple, tripleOther);
+        }
+
+        // cancel 三条：帧数取齐（各 12 次推进）—— 防御性写法，实测收尾空帧数不影响产物。
+        // dragUp = 「拖到 300 后正常松开」：它是「cancel 不丢选区」的 oracle（缺它时，把 cancel
+        // 改成「清锚 + 折叠到 caret 0」会让整套断言全绿，见独立审查 M5）。
+        String scriptUp = "--actions=move 280 180; frame; down; frame; move 300 180; frame; up; wait 9";
+        String scriptCancelThenMove = "--actions=move 280 180; frame; down; frame; move 300 180;"
+                + " frame; cancel; frame; move 330 180; wait 8";
+        String scriptCancelStay = "--actions=move 280 180; frame; down; frame; move 300 180;"
+                + " frame; cancel; wait 9";
+        String scriptNoCancel = "--actions=move 280 180; frame; down; frame; move 300 180;"
+                + " frame; move 330 180; wait 9";
+        String[] dragShots = renderDistinct(
+                new String[] {stem + "-up", stem + "-cancel-stay", stem + "-cancel-then-move"},
+                new String[] {scriptUp, scriptCancelStay, scriptCancelThenMove}, shared);
+        String dragUp = dragShots[0];
+        String dragCancelStay = dragShots[1];
+        String dragCancelThenMove = dragShots[2];
+        String dragNoCancel = renderDigest(stem + "-no-cancel", withScript(scriptNoCancel, shared));
+        Assert.assertEquals(where + "cancel 不得丢弃已拖出的选区 —— 必须与正常松开逐字节相同："
+                + dragUp + " vs " + dragCancelStay, dragUp, dragCancelStay);
+        Assert.assertEquals(where + "cancel 之后的指针移动不得再扩展选区 —— 应与「拖完即 cancel」逐字节相同："
+                + dragCancelThenMove + " vs " + dragCancelStay, dragCancelStay, dragCancelThenMove);
+        Assert.assertNotEquals(where + "自检：没有 cancel 时那次移动确实会扩展选区（否则上一条是空的）："
+                + dragCancelStay + " vs " + dragNoCancel, dragCancelStay, dragNoCancel);
+    }
+
+    /**
+     * 成组出图 + 「参与等价对拍的脚本两两不同」自检（等价对拍专用）。
+     *
+     * <p>自检必须比**实际传入的脚本**：只比「落点参数不同」（第一版）在调用点被改动时不红；
+     * 只比「变量定义」（第二版）在实参被换成另一个变量时不红 —— 两种形态都实测过（独立审查 M6
+     * 与 Lead 复核）。把自检放进 helper、与出图共用同一组实参，两种自伤都会红。</p>
+     *
+     * <p>反空跑对照（期望**不相等**的产物）不走本方法：它们不需要这条自检。</p>
+     *
+     * @param names      产物名（与 scripts 等长、同序）
+     * @param scripts    脚本（逐条出图；两两必须不同）
+     * @param sharedArgs 共用的其余命令行参数
+     * @return 与 scripts 同序的产物摘要
+     */
+    private static String[] renderDistinct(String[] names, String[] scripts, String... sharedArgs)
+            throws Exception {
+        Assert.assertEquals("自检：产物名与脚本必须一一对应", names.length, scripts.length);
+        for (int i = 0; i < scripts.length; i++) {
+            for (int j = i + 1; j < scripts.length; j++) {
+                Assert.assertNotEquals("自检：参与等价对拍的脚本必须两两不同，否则等价式恒真："
+                        + scripts[i] + " vs " + scripts[j], scripts[i], scripts[j]);
+            }
+        }
+        String[] digests = new String[scripts.length];
+        for (int i = 0; i < scripts.length; i++) {
+            digests[i] = renderDigest(names[i], withScript(scripts[i], sharedArgs));
+        }
+        return digests;
+    }
+
+    /** 把脚本追加到共享参数之后（{@code renderDigest} 的 {@code (name, args...)} 契约不变）。 */
+    private static String[] withScript(String script, String... sharedArgs) {
+        String[] args = java.util.Arrays.copyOf(sharedArgs, sharedArgs.length + 1);
+        args[sharedArgs.length] = script;
+        return args;
+    }
+
+    /** 单击落点脚本（按下与抬起跨帧）。 */
+    private static String clickAt(int x) {
+        return "--actions=move " + x + " 180; frame; down; frame; up; wait 6";
+    }
+
+    /** 双击落点脚本。 */
+    private static String doubleClickAt(int x) {
+        return "--actions=move " + x + " 180; frame; dblclick; wait 6";
+    }
+
+    /** 三击落点脚本（脚本语法没有三击关键字，按三次跨帧 down/up 展开写）。 */
+    private static String tripleClickAt(int x) {
+        return "--actions=move " + x + " 180; frame; down; frame; up; frame; down; frame; up;"
+                + " frame; down; frame; up; wait 6";
+    }
+
+    /** Ctrl+A 全选脚本：三击在单行控件上的独立 oracle（键盘路径，与指针路径无共用代码）。 */
+    private static String selectAllAt(int x) {
+        return "--actions=move " + x + " 180; frame; down; frame; up; frame; keydown CONTROL_LEFT;"
+                + " frame; key A; frame; keyup CONTROL_LEFT; wait 6";
+    }
+
+    /**
      * 出图必须逐字节确定（同一命令连跑三次）—— 设施的核心契约。
      *
      * <p>连跑**三次**而不是两次：独立审核用「宽度缓存预算改回 64」这一真实回归做剂量对照，
