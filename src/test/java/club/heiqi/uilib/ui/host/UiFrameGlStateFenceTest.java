@@ -1,4 +1,4 @@
-package club.heiqi.uilib.client;
+package club.heiqi.uilib.ui.host;
 
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
@@ -22,13 +22,13 @@ import org.lwjgl.opengl.GL20;
 import org.lwjgl.opengl.GL30;
 
 /** HUD 轻量 GL 围栏的状态守恒、能力降级与异常语义测试。 */
-public class HudGlStateGuardTest {
+public class UiFrameGlStateFenceTest {
     @Test
     public void restoresNonDefaultEntryStateIncludingActiveTextureAndModernBindings() {
         FakeGlAccess gl = new FakeGlAccess();
         EntryState entry = new EntryState(gl);
 
-        new HudGlStateGuard(gl).run(gl::mutateAll);
+        new UiFrameGlStateFence(gl).run(gl::mutateAll);
 
         entry.assertRestored(gl);
         assertEquals(1, gl.captureCalls);
@@ -45,7 +45,7 @@ public class HudGlStateGuardTest {
         gl.programSupported = false;
         gl.vertexArraySupported = false;
 
-        new HudGlStateGuard(gl).run(() -> gl.enabled.put(GL11.GL_DEPTH_TEST, false));
+        new UiFrameGlStateFence(gl).run(() -> gl.enabled.put(GL11.GL_DEPTH_TEST, false));
 
         assertEquals(0, gl.activeTextureCalls);
         assertEquals(0, gl.programCalls);
@@ -65,7 +65,7 @@ public class HudGlStateGuardTest {
         FakeGlAccess gl = new FakeGlAccess();
         IllegalStateException captureFailure = new IllegalStateException("capture");
         gl.captureFailure = captureFailure;
-        HudGlStateGuard guard = new HudGlStateGuard(gl);
+        UiFrameGlStateFence guard = new UiFrameGlStateFence(gl);
         int[] frameCalls = { 0 };
 
         try {
@@ -93,7 +93,7 @@ public class HudGlStateGuardTest {
         int entryModelviewDepth = gl.modelviewDepth;
 
         try {
-            new HudGlStateGuard(gl).run(() -> fail("不得执行业务"));
+            new UiFrameGlStateFence(gl).run(() -> fail("不得执行业务"));
             fail("第二次矩阵 push 失败必须向外传播");
         } catch (IllegalStateException expected) {
             assertEquals("push-2", expected.getMessage());
@@ -114,7 +114,7 @@ public class HudGlStateGuardTest {
         gl.restoreFailure = restoreFailure;
 
         try {
-            new HudGlStateGuard(gl).run(() -> { throw frameFailure; });
+            new UiFrameGlStateFence(gl).run(() -> { throw frameFailure; });
             fail("restore 失败必须阻断后续绘制");
         } catch (AssertionError actual) {
             assertSame(restoreFailure, actual);
@@ -131,7 +131,7 @@ public class HudGlStateGuardTest {
         gl.restoreFailure = restoreFailure;
 
         try {
-            new HudGlStateGuard(gl).run(() -> { });
+            new UiFrameGlStateFence(gl).run(() -> { });
             fail("restore 失败必须传播");
         } catch (IllegalStateException actual) {
             assertSame(restoreFailure, actual);
@@ -142,7 +142,7 @@ public class HudGlStateGuardTest {
     @Test
     public void rejectsReentryWithoutStartingSecondCapture() {
         FakeGlAccess gl = new FakeGlAccess();
-        HudGlStateGuard guard = new HudGlStateGuard(gl);
+        UiFrameGlStateFence guard = new UiFrameGlStateFence(gl);
 
         try {
             guard.run(() -> guard.run(() -> { }));
@@ -157,7 +157,7 @@ public class HudGlStateGuardTest {
     @Test
     public void eachFrameCapturesAndRestoresOnceUsingSameSnapshotArrays() {
         FakeGlAccess gl = new FakeGlAccess();
-        HudGlStateGuard guard = new HudGlStateGuard(gl);
+        UiFrameGlStateFence guard = new UiFrameGlStateFence(gl);
 
         guard.run(() -> { });
         Object firstViewportTarget = gl.viewportReadTarget;
@@ -173,7 +173,7 @@ public class HudGlStateGuardTest {
     /** 回归 issue #70：LWJGL2 glGet* buffer 重载恒定校验 remaining >= 16，查询缓冲不得小于该阈值。 */
     @Test
     public void lwjglQueryBuffersProvideAtLeastSixteenRemainingElements() throws Exception {
-        Class<?> accessType = Class.forName(HudGlStateGuard.class.getName() + "$LwjglGlAccess");
+        Class<?> accessType = Class.forName(UiFrameGlStateFence.class.getName() + "$LwjglGlAccess");
         Constructor<?> constructor = accessType.getDeclaredConstructor();
         constructor.setAccessible(true);
         Object access = constructor.newInstance();
@@ -196,7 +196,7 @@ public class HudGlStateGuardTest {
     private static void assertBusinessFailurePreserved(Throwable failure) {
         FakeGlAccess gl = new FakeGlAccess();
         try {
-            new HudGlStateGuard(gl).run(() -> throwUnchecked(failure));
+            new UiFrameGlStateFence(gl).run(() -> throwUnchecked(failure));
             fail("业务失败必须传播");
         } catch (RuntimeException actual) {
             assertSame(failure, actual);
@@ -265,7 +265,7 @@ public class HudGlStateGuardTest {
     }
 
     /** 不触发 LWJGL 初始化的记录型完整状态访问桩。 */
-    private static final class FakeGlAccess implements HudGlStateGuard.GlAccess {
+    private static final class FakeGlAccess implements UiFrameGlStateFence.GlAccess {
         private final Map<Integer, Boolean> enabled = new HashMap<Integer, Boolean>();
         private final Map<Integer, Boolean> textureEnabled = new HashMap<Integer, Boolean>();
         private final Map<Integer, Integer> textureBindings = new HashMap<Integer, Integer>();

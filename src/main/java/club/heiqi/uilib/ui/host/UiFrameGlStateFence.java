@@ -1,4 +1,4 @@
-package club.heiqi.uilib.client;
+package club.heiqi.uilib.ui.host;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -14,8 +14,18 @@ import org.lwjgl.opengl.GL20;
 import org.lwjgl.opengl.GL30;
 import org.lwjgl.opengl.GLContext;
 
-/** HUD 帧入口的轻量 GL 状态围栏；实例、快照和查询缓冲均跨帧复用。 */
-final class HudGlStateGuard {
+/**
+ * UI 帧入口的 GL 状态围栏：保存进入时的真实 GL 状态，帧体执行后（含异常路径）逐项恢复。
+ *
+ * <p>HUD 帧（{@code client.UiHudRenderListener}）与屏幕帧（{@code ui.screen.McScreenBridge}）共用同一套语义，
+ * 避免两个入口的状态恢复集合出现分叉。实例、快照和查询缓冲均跨帧复用。</p>
+ *
+ * <p>不覆盖的状态与理由：framebuffer 绑定、深度函数、CLEAR 值、纹理环境与混合方程等不在快照内，
+ * 由帧内的离屏层（{@code UiRenderTarget} 进层时的全量 attrib 帧）与各组件自恢复；
+ * 矩阵栈内容与 client 顶点数组状态亦不在此围栏职责内。改动本类的快照集合前请先读
+ * {@code docs/历史报告/审查/2026-09-19-GL使用自净审查.md}。</p>
+ */
+public final class UiFrameGlStateFence {
     /** 可注入的最小 GL 状态访问面。 */
     interface GlAccess {
         void beginCapture();
@@ -54,23 +64,23 @@ final class HudGlStateGuard {
     private boolean active;
 
     /** 创建生产 LWJGL 状态围栏。 */
-    HudGlStateGuard() {
+    public UiFrameGlStateFence() {
         this(new LwjglGlAccess());
     }
 
     /** 创建使用指定状态访问面的围栏。 */
-    HudGlStateGuard(GlAccess gl) {
+    UiFrameGlStateFence(GlAccess gl) {
         if (gl == null) throw new IllegalArgumentException("gl");
         this.gl = gl;
     }
 
     /**
-     * 在单次 capture/restore 边界内执行完整 HUD 帧。
+     * 在单次 capture/restore 边界内执行完整 UI 帧（HUD 或屏幕）。
      * restore 失败优先抛出，业务失败作为 suppressed 保留。
      */
-    void run(Runnable frame) {
+    public void run(Runnable frame) {
         if (frame == null) throw new IllegalArgumentException("frame");
-        if (active) throw new IllegalStateException("HUD GL 状态围栏不允许重入");
+        if (active) throw new IllegalStateException("UI 帧 GL 状态围栏不允许重入（HUD 与屏幕各自持有实例）");
         active = true;
         try {
             capture();
@@ -325,7 +335,7 @@ final class HudGlStateGuard {
         throw (Error) failure;
     }
 
-    /** 跨帧复用的 HUD GL 状态快照。 */
+    /** 跨帧复用的 UI 帧 GL 状态快照。 */
     private static final class Snapshot {
         private boolean depthTest, cullFace, alphaTest, lighting, blend, scissorTest, stencilTest, texture2d;
         private boolean depthMask;

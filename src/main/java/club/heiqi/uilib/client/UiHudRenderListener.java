@@ -11,6 +11,7 @@ import club.heiqi.uilib.ui.hud.api.HudSpec;
 import club.heiqi.uilib.ui.hud.api.HudVisibility;
 import club.heiqi.uilib.ui.diagnostic.UiPerformanceMonitor;
 import club.heiqi.uilib.ui.env.UiEnvironment;
+import club.heiqi.uilib.ui.host.UiFrameGlStateFence;
 import club.heiqi.uilib.ui.host.UiHostRenderSupport;
 import club.heiqi.uilib.ui.reactive.Signal;
 import club.heiqi.uilib.ui.render.PaintContextCompositor;
@@ -26,7 +27,7 @@ import cpw.mods.fml.common.eventhandler.SubscribeEvent;
 
 /** 唯一 Forge HUD render bridge；不取消事件，不承载业务布局。 */
 public final class UiHudRenderListener {
-    private static final HudGlStateGuard HUD_GL_STATE_GUARD = new HudGlStateGuard();
+    private static final UiFrameGlStateFence HUD_GL_STATE_FENCE = new UiFrameGlStateFence();
 
     /**
      * HUD 帧的采样界面名。
@@ -37,6 +38,13 @@ public final class UiHudRenderListener {
     private static final String HUD_SAMPLE_SCREEN = "hud";
     private final ClientHudServiceImpl service = ClientHudServiceImpl.getInstance();
     private final SceneHudHost host = new SceneHudHost(service);
+    // 共享渲染资源（离屏层池 + 快照池）的生命周期与 listener 同长，即与进程同长：
+    // 两处池都有界（layer 池按借用计数复用并显式归还/丢弃；snapshot 池上限 32 并驱逐最旧未活跃槽），
+    // 不是逐帧新建，故不需要 JVM 退出阶段的释放——
+    // 且退出阶段多在非渲染线程，碰 GL 会触发 native 崩溃（先例见 FontService.shutdown 的跳过分支）。
+    // 唯一必须释放的真实时机是 GL context 重建（宿主换渲染后端/重建窗口）：届时池里的 FBO/纹理 id 全部失效，
+    // 必须在此接线 UiHostRenderSupport.closeSharedRenderResources 复位两处池，再让下一帧惰性重建。
+    // 当前仓内没有 context 重建检测点（属已知缺口，登记在 GL 自净审查报告 N14）。
     private final PaintContextCompositor compositor = new PaintContextCompositor();
     private final UiMainLayerSnapshotService snapshots = new UiMainLayerSnapshotService();
     private final MinecraftHudEnvironment environment;
@@ -127,7 +135,7 @@ public final class UiHudRenderListener {
         HudViewportMetrics viewport = viewport();
         int width = viewport.getWidth();
         int height = viewport.getHeight();
-        HUD_GL_STATE_GUARD.run(() -> renderHudFrame(event, minecraft, viewport, width, height));
+        HUD_GL_STATE_FENCE.run(() -> renderHudFrame(event, minecraft, viewport, width, height));
     }
 
     /**

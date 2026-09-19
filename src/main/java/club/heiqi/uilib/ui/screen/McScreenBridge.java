@@ -13,6 +13,7 @@ import org.apache.logging.log4j.Logger;
 import org.lwjgl.opengl.GL11;
 
 import club.heiqi.uilib.ui.host.NativeDisplaySize;
+import club.heiqi.uilib.ui.host.UiFrameGlStateFence;
 import club.heiqi.uilib.ui.host.UiHostRenderSupport;
 import club.heiqi.uilib.ui.render.PaintContextCompositor;
 import club.heiqi.uilib.ui.render.UiRenderContext;
@@ -140,6 +141,9 @@ public abstract class McScreenBridge extends GuiScreen implements club.heiqi.uil
     /** 跨帧复用的主图层快照服务，随屏幕关闭统一释放持有的渲染资源。 */
     private final UiMainLayerSnapshotService mainLayerSnapshotService = new UiMainLayerSnapshotService();
 
+    /** 屏幕帧状态围栏：与 HUD 帧共用同一套语义（GL 自净审查 N1 的落地）。 */
+    private static final UiFrameGlStateFence SCREEN_GL_STATE_FENCE = new UiFrameGlStateFence();
+
     /** 首帧诊断是否已打印（initGui 重置，使 resize/GUI Scale 变化后重新诊断）。 */
     private boolean firstFrameLogged;
 
@@ -237,7 +241,6 @@ public abstract class McScreenBridge extends GuiScreen implements club.heiqi.uil
     @Override
     public void drawScreen(int mouseX, int mouseY, float partialTicks) {
         int frameBaseDepth = club.heiqi.uilib.util.GlAttribDepth.current();
-        drawDefaultBackground();
         Minecraft minecraft = Minecraft.getMinecraft();
         // 原生窗口分辨率(物理像素):MC resize 回调维护的 displayWidth/Height 即窗口物理像素
         // (非 scaled;scaled = displayWidth / scaleFactor 受 guiScale 影响)。真机上
@@ -266,40 +269,51 @@ public abstract class McScreenBridge extends GuiScreen implements club.heiqi.uil
             firstFrameLogged = true;
         }
 
-        // 帧前置语义（正交投影 / viewport / 混合状态）与 headless 宿主共用同一入口，避免两边漂移。
-        try (UiHostRenderSupport.MainFrameScope frame =
-                UiHostRenderSupport.beginMainUiFrame(nativeWidth, nativeHeight)) {
-            paintContextCompositor.beginFrame();
-            mainLayerSnapshotService.beginFrame();
-            try {
-                    UiRenderContext context = UiHostRenderSupport.createRenderContext(nativeWidth, nativeHeight,
-                            pointerX, pointerY, partialTicks, paintContextCompositor, mainLayerSnapshotService,
-                            runtimeAdapters);
-                    // 渲染面按<B>逻辑盒</B>驱动:scene 坐标空间 = logical px,与指针换算同源成对。
-                    surface.render(logicalWidth, logicalHeight, context, 0, 0);
-                } catch (RuntimeException renderError) {
-                    if (DEBUG) {
-                        LOG.error("[" + screenLabel + "] surface.render 抛 RuntimeException（新壳渲染失败，将重抛冒泡）",
-                                renderError);
+        // 帧状态围栏：进入即快照宿主真实 GL 状态，退出时（含异常与重抛路径）逐项恢复 viewport / enable 位 /
+        // 掩码 / 颜色等。此前屏幕入口只恢复矩阵栈，viewport 与 enable 位依赖宿主每帧重设，属「靠宿主兜底」
+        // （GL 自净审查 N1）；围栏与 HUD 帧共用同一实现，避免两个入口的恢复集合分叉。
+        try {
+            SCREEN_GL_STATE_FENCE.run(() -> {
+                // 宿主背景绘制也必须在围栏内：GuiScreen.drawWorldBackground 走原版 Tessellator 并改 LIGHTING/FOG，
+                // 留在围栏外就是本帧唯一不受恢复的 GL 写入（独立复核 B 项）。
+                drawDefaultBackground();
+                // 帧前置语义（正交投影 / viewport / 混合状态）与 headless 宿主共用同一入口，避免两边漂移。
+                try (UiHostRenderSupport.MainFrameScope frame =
+                        UiHostRenderSupport.beginMainUiFrame(nativeWidth, nativeHeight)) {
+                    paintContextCompositor.beginFrame();
+                    mainLayerSnapshotService.beginFrame();
+                    try {
+                        UiRenderContext context = UiHostRenderSupport.createRenderContext(nativeWidth, nativeHeight,
+                                pointerX, pointerY, partialTicks, paintContextCompositor, mainLayerSnapshotService,
+                                runtimeAdapters);
+                        // 渲染面按<B>逻辑盒</B>驱动:scene 坐标空间 = logical px,与指针换算同源成对。
+                        surface.render(logicalWidth, logicalHeight, context, 0, 0);
+                    } catch (RuntimeException renderError) {
+                        if (DEBUG) {
+                            LOG.error("[" + screenLabel + "] surface.render 抛 RuntimeException（新壳渲染失败，将重抛冒泡）",
+                                    renderError);
+                        }
+                        throw renderError;
+                    } catch (LinkageError renderError) {
+                        if (DEBUG) {
+                            LOG.error("[" + screenLabel + "] surface.render 抛 LinkageError（新壳渲染失败，将重抛冒泡）",
+                                    renderError);
+                        }
+                        throw renderError;
+                    } finally {
+                        mainLayerSnapshotService.finishFrame();
+                        paintContextCompositor.finishFrame();
                     }
-                    throw renderError;
-                } catch (LinkageError renderError) {
-                    if (DEBUG) {
-                        LOG.error("[" + screenLabel + "] surface.render 抛 LinkageError（新壳渲染失败，将重抛冒泡）",
-                                renderError);
-                    }
-                    throw renderError;
-            } finally {
-                mainLayerSnapshotService.finishFrame();
-                paintContextCompositor.finishFrame();
+                }
+            });
+        } finally {
+            if (DEBUG) {
+                logResourcePoolEdgeChange();
             }
+            // 帧级围堵：把本帧内第三方泄漏的 attrib 深度弹回帧起点，防止跨帧累积。
+            // 必须在 finally 内：异常重抛路径同样要回收，否则兜底恰好跳过最可能泄漏的那一帧（N10）。
+            club.heiqi.uilib.util.GlAttribDepth.popExcess(frameBaseDepth);
         }
-
-        if (DEBUG) {
-            logResourcePoolEdgeChange();
-        }
-        // 帧级围堵：把本帧内第三方泄漏的 attrib 深度弹回帧起点，防止跨帧累积。
-        club.heiqi.uilib.util.GlAttribDepth.popExcess(frameBaseDepth);
     }
 
     /**
