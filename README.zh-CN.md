@@ -2,7 +2,9 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-面向 Minecraft 1.7.10 / GTNH / LWJGL3ify 环境的 **scene 新栈** UI 框架。
+面向 Minecraft 1.7.10 / GTNH / LWJGL3ify 环境的声明式 scene UI 框架。
+
+[文档首页](docs/README.md) · [接入指南](docs/使用文档/README.md) · [维护指南](docs/开发者文档/README.md) · [排障](docs/反馈层/README.md)
 
 ## 简介
 
@@ -69,7 +71,7 @@ Minecraft.getMinecraft().displayGuiScreen(screen);
 1. **JDK 25** —— 编译需要 JDK 25（CI 固定 temurin 25）；若构建找不到可用的 JDK 25，请在本机安装。
 2. **Gradle** —— 一律使用仓库自带的 `gradlew.bat`（Windows）/ `./gradlew`（Unix）。wrapper 已锁定 9.3.1，无需单独安装 Gradle。
 3. **Windows 下的 `GRADLE_USER_HOME`** —— 若 Windows 用户名或其家目录路径含非 ASCII 字符、空格或其他特殊字符，请在首次构建前将其配置为纯 ASCII 路径。
-4. **GTNH Maven 可达性** —— 首次构建会从 `nexus.gtnewhorizons.com`（GTNH 整合包）拉取大量依赖。在该主机不可达或访问缓慢的网络环境下，可能出现长时间同步或超时；离线回退方案见 `docs/反馈层/errors/ERROR-elytra-offline-manifest-cache.md`。
+4. **GTNH Maven 可达性** —— 首次构建会从 `nexus.gtnewhorizons.com`（GTNH 整合包）拉取大量依赖。在该主机不可达或访问缓慢的网络环境下，可能出现长时间同步或超时；离线回退方案见 [manifest 缓存排查](docs/反馈层/errors/ERROR-elytra-offline-manifest-cache.md)。
 
 ## 文档
 
@@ -78,13 +80,14 @@ Minecraft.getMinecraft().displayGuiScreen(screen);
 | [使用文档](docs/使用文档/README.md) | 面向接入开发者的入门指南、控件、宿主集成 |
 | [配置页（ModernConfig）](docs/使用文档/02-控件/配置页（ModernConfig）.md) | 配置页接入指南 |
 | [公共 API 稳定清单](docs/使用文档/公共API稳定清单.md) | 接入方可以依赖什么、什么明确不稳定 |
-| [开发者文档](docs/开发者文档/README.md) | 面向框架维护者的内部架构、规格与排障记录 |
+| [开发者文档](docs/开发者文档/README.md) | 面向框架维护者的架构、规格与验证入口 |
+| [排障与反馈](docs/反馈层/README.md) | 按症状查找指南与历史故障复盘 |
 
 完整文档导航见 [docs/README.md](docs/README.md)。
 
 ## 构建
 
-编译、测试与实机运行命令集中在 [docs/README.md](docs/README.md) 的「稳定命令与排障」一节，文档导航与排障入口同页；环境前置（JDK 25、Gradle wrapper、`GRADLE_USER_HOME`、GTNH Maven 可达性）见上文「环境搭建」。
+编译、测试与实机运行命令集中在 [稳定命令与排障](docs/README.md#稳定命令与排障)，文档导航与排障入口同页；环境前置（JDK 25、Gradle wrapper、`GRADLE_USER_HOME`、GTNH Maven 可达性）见上文「环境搭建」。
 
 ## 许可证
 

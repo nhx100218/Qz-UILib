@@ -4,6 +4,8 @@
 
 A scene-stack UI framework for Minecraft 1.7.10 / GTNH / LWJGL3ify.
 
+[Documentation](docs/README.md) · [Integration](docs/使用文档/README.md) · [Maintenance](docs/开发者文档/README.md) · [Troubleshooting](docs/反馈层/README.md)
+
 ## Overview
 
 Qz UILib provides a declarative **scene** UI stack for Minecraft modding: signals → dirty marks → layout → Display List → OpenGL. Build screens with Java APIs (`SceneRuntime` + `Scene*` controls + host bridges). Configuration pages use Schema + `ConfigUI` + scene form shells.
@@ -69,7 +71,7 @@ Notes for first-time setup, especially on Windows with a non-ASCII username:
 1. **JDK 25** — compilation needs a Java 25 toolchain (CI pins temurin 25); if the build cannot find one, install JDK 25 on your machine.
 2. **Gradle** — always invoke the bundled `gradlew.bat` (Windows) / `./gradlew` (Unix). The wrapper is pinned to 9.3.1, so there is no need to install Gradle separately.
 3. **`GRADLE_USER_HOME` on Windows** — if your Windows username or its home path contains non-ASCII characters, spaces, or other special characters, set `GRADLE_USER_HOME` to a clean ASCII path before running the build.
-4. **GTNH Maven reachability** — the first build resolves a large dependency graph from `nexus.gtnewhorizons.com` (the GTNH modpack). On networks where that host is slow or blocked, expect long sync times or timeouts. An offline fallback is documented in `docs/反馈层/errors/ERROR-elytra-offline-manifest-cache.md`.
+4. **GTNH Maven reachability** — the first build resolves a large dependency graph from `nexus.gtnewhorizons.com` (the GTNH modpack). On networks where that host is slow or blocked, expect long sync times or timeouts. See the [offline manifest cache guide](docs/反馈层/errors/ERROR-elytra-offline-manifest-cache.md) for a fallback.
 
 ## Documentation
 
@@ -78,7 +80,8 @@ Notes for first-time setup, especially on Windows with a non-ASCII username:
 | [Usage Docs (Chinese)](docs/使用文档/README.md) | Onboarding guide, controls and host integration for integrators |
 | [ModernConfig](docs/使用文档/02-控件/配置页（ModernConfig）.md) | Config page integration guide |
 | [Public API stability list (Chinese)](docs/使用文档/公共API稳定清单.md) | What integrators may rely on, and what is explicitly unstable |
-| [Developer Docs (Chinese)](docs/开发者文档/README.md) | Internal architecture, specs, and troubleshooting records for framework maintainers |
+| [Developer Docs (Chinese)](docs/开发者文档/README.md) | Architecture, specifications, and validation entry points for framework maintainers |
+| [Troubleshooting (Chinese)](docs/反馈层/README.md) | Guides and historical incident records grouped by symptom |
 
 Full documentation index: [docs/README.md](docs/README.md).
 
@@ -86,7 +89,7 @@ Full documentation index: [docs/README.md](docs/README.md).
 
 ## Build
 
-Compile, test and in-game run commands are maintained in one place: see the 「稳定命令与排障」 section of [docs/README.md](docs/README.md), which also holds the troubleshooting entry points. Environment prerequisites (JDK 25, Gradle wrapper, `GRADLE_USER_HOME`, GTNH Maven reachability) are listed in Environment Setup above.
+Compile, test and in-game run commands are maintained in one place: see [build commands and troubleshooting](docs/README.md#稳定命令与排障), which also holds the troubleshooting entry points. Environment prerequisites (JDK 25, Gradle wrapper, `GRADLE_USER_HOME`, GTNH Maven reachability) are listed in Environment Setup above.
 
 ## License
 
