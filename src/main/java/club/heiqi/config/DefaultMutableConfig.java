@@ -1,10 +1,13 @@
 package club.heiqi.config;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 import org.apache.logging.log4j.LogManager;
@@ -26,6 +29,16 @@ public class DefaultMutableConfig implements MutableConfig {
     private boolean dirty;
     /** 加载期原始带注释 ConfigNode 树：未修改时直接 round-trip，已修改时作为注释归位来源（只读） */
     private ConfigNode originalNode;
+    /**
+     * 本次会话中已被显式删除（{@link #remove(String)} / {@link #clear()}）的加载期快照子树。
+     *
+     * <p>注释按「路径位置」归位，因此「这个位置被删过」必须被记住：否则同键重建或 clear 后重建
+     * 会把已删除子树的注释重新贴到新值上，与「新出现的键没有注释」自相矛盾。这里只按 identity
+     * 记录被删除的快照节点，重建时同路径命中即视为该位置的快照注释已失效；不另存注释副本，
+     * 也不修改只读的 {@link #originalNode}。</p>
+     */
+    private final Set<ConfigNode> revokedOriginals =
+            Collections.newSetFromMap(new IdentityHashMap<ConfigNode, Boolean>());
     /** 是否仍处于未修改的原始状态：true 时 asImmutable/save 直接用 originalNode，保留注释 */
     private boolean pristine;
 
@@ -62,7 +75,7 @@ public class DefaultMutableConfig implements MutableConfig {
      */
     public DefaultMutableConfig(ConfigFormat format, ConfigSource source) {
         this(NullConfigNode.INSTANCE, format, source);
-        this.data = new HashMap<String, Object>();
+        this.data = new LinkedHashMap<String, Object>();
     }
 
     @Override
@@ -139,6 +152,7 @@ public class DefaultMutableConfig implements MutableConfig {
         if (existed) {
             dirty = true;
             pristine = false;
+            revokeOriginalPath(path);
             notifyListeners(new ConfigChangeEvent(path, oldValue, null, 
                     ConfigChangeEvent.ChangeType.REMOVE));
         }
@@ -149,9 +163,12 @@ public class DefaultMutableConfig implements MutableConfig {
     @Override
     public MutableConfig clear() {
         Map<String, Object> oldData = this.data;
-        this.data = new HashMap<String, Object>();
+        this.data = new LinkedHashMap<String, Object>();
         dirty = true;
         pristine = false;
+        if (originalNode != null) {
+            revokedOriginals.add(originalNode);
+        }
 
         notifyListeners(new ConfigChangeEvent("", oldData, null, 
                 ConfigChangeEvent.ChangeType.CLEAR));
@@ -199,6 +216,7 @@ public class DefaultMutableConfig implements MutableConfig {
         ConfigNode node = loader.load(source);
         this.data = convertToMutableMap(node);
         this.originalNode = node;
+        this.revokedOriginals.clear();
         this.pristine = true;
         this.dirty = false;
 
@@ -293,8 +311,9 @@ public class DefaultMutableConfig implements MutableConfig {
     @Override
     public Map<String, ConfigNode> asMap() {
         Map<String, ConfigNode> result = new LinkedHashMap<String, ConfigNode>();
-        Map<String, ConfigNode> originals = originalNode != null && originalNode.getType() == NodeType.MAP
-                ? originalNode.asMap() : null;
+        // clear 撤销的是整棵加载期快照；asMap 同样必须阻止其子位置注释复活。
+        Map<String, ConfigNode> originals = originalNode != null && !revokedOriginals.contains(originalNode)
+                && originalNode.getType() == NodeType.MAP ? originalNode.asMap() : null;
         for (Map.Entry<String, Object> entry : data.entrySet()) {
             result.put(entry.getKey(), convertToImmutableNode(entry.getValue(),
                     originals != null ? originals.get(entry.getKey()) : null));
@@ -372,12 +391,12 @@ public class DefaultMutableConfig implements MutableConfig {
      */
     private Map<String, Object> convertToMutableMap(ConfigNode node) {
         if (node.getType() != NodeType.MAP) {
-            return new HashMap<String, Object>();
+            return new LinkedHashMap<String, Object>();
         }
 
         Map<String, ConfigNode> sourceMap = node.asMap();
         if (sourceMap == null) {
-            return new HashMap<String, Object>();
+            return new LinkedHashMap<String, Object>();
         }
 
         Map<String, Object> result = new LinkedHashMap<String, Object>();
@@ -458,10 +477,15 @@ public class DefaultMutableConfig implements MutableConfig {
     /**
      * 把可变值重建为不可变节点，并按<b>路径</b>从原始树上归位注释元数据。
      *
-     * <p><b>注释归属口径（C2）</b>：注释属于「位置」而不是「节点实例」——Map 的键、List 的下标。
-     * 只改某个值再保存时，未变路径上的块注释 / 内联注释 / collection 末尾注释原样保留；被删除的键
-     * 其注释自然消失（位置不存在了）；新出现的键没有注释；List 元素按下标对齐（元素增删会让其后
-     * 元素的注释随位置平移，这正是「注释属于第 i 个位置」的直读语义）。</p>
+     * <p><b>注释归属口径</b>：注释属于「加载期快照中的位置」而不是节点实例——Map 的键、List 的
+     * 下标。只改某个值再保存时，未变路径上的块注释 / 内联注释 / collection 末尾注释原样保留；
+     * 被删除的键其注释随位置消失；List 元素按下标对齐，注释固定在原下标，不跟随元素值移动；
+     * 替换 List 时只对当前仍存在的下标归位。快照中从未出现的路径（新键、新下标）没有注释。</p>
+     *
+     * <p><b>删除过的位置不复活</b>：{@link #remove(String)} / {@link #clear()} 会把对应的加载期
+     * 快照子树记入 {@link #revokedOriginals}，之后同一路径重建（remove 后同键再 set、clear 后
+     * 重建）按全新位置处理，不带回旧注释；否则「被删除的键其注释自然消失」与「新出现的键没有
+     * 注释」会在同一份快照上互相矛盾。</p>
      *
      * <p><b>为什么按路径复制而不是复用未变子树</b>：{@code data} 是修改之后的唯一事实源，
      * 直接挂原始 subtree 会让「已修改树」与 {@code originalNode} 共享可变节点（副本语义破裂）。
@@ -470,10 +494,14 @@ public class DefaultMutableConfig implements MutableConfig {
      * 整个生命周期只读。</p>
      *
      * @param value    可变值
-     * @param original 同路径的原始节点（可为 null：新键/新下标，无注释可归位）
+     * @param original 同路径的原始节点（可为 null：新键/新下标/已删除位置，无注释可归位）
      * @return 配置节点
      */
     private ConfigNode convertToImmutableNode(Object value, ConfigNode original) {
+        if (original != null && revokedOriginals.contains(original)) {
+            // 该位置被本次会话显式删除过：快照注释已失效，重建出的新值按新位置处理
+            original = null;
+        }
         if (value instanceof ConfigNode) {
             // 防御分支：调用方自带的节点原样返回，绝不往外部对象上写注释
             return (ConfigNode) value;
@@ -560,6 +588,32 @@ public class DefaultMutableConfig implements MutableConfig {
         return original != null && (original.getBlockComment() != null
                 || original.getInlineComment() != null
                 || original.getEndComment() != null);
+    }
+
+    /**
+     * 把加载期快照中 {@code path} 位置的子树标记为「已删除」。
+     *
+     * <p>只按 identity 记下快照节点，不复制也不改动它；重建时同路径命中即视为快照注释失效
+     * （见 {@link #convertToImmutableNode(Object, ConfigNode)}）。路径在快照中不存在则无事发生。</p>
+     *
+     * @param path 已确认删除的配置路径
+     */
+    private void revokeOriginalPath(String path) {
+        ConfigNode node = originalNode;
+        if (node == null) {
+            return;
+        }
+        for (String part : path.split("\\.")) {
+            if (node.getType() != NodeType.MAP) {
+                return;
+            }
+            Map<String, ConfigNode> map = node.asMap();
+            node = map == null ? null : map.get(part);
+            if (node == null) {
+                return;
+            }
+        }
+        revokedOriginals.add(node);
     }
 
     /**

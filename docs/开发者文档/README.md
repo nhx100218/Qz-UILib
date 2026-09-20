@@ -25,7 +25,7 @@
 | [build.gradle.kts](../../build.gradle.kts) 的 `verifyDevToolsNotPackaged` | 逐个打开 `jar / shadowJar / sourcesJar / apiJar / reobfJar`，断言 `club/heiqi/uilib/internal/devtools` 整包不在产物内 | `check`（含 `build`）自动带上；改动打包任务、devtools 包路径或新增产物任务时必看 |
 | [tools/audit/README.md](../../tools/audit/README.md) | 按需诊断脚本：对比度/合成色数值、文档数值可追溯性、表面属性写入者扫描、legacy 兼容入口零点核验 | 手动运行，**不参与提交阻断、不维护清单文件**；只在需要结论时算一遍 |
 
-文档检查（本地链接目标、锚点、状态一致性）目前没有常驻门禁：若后续引入，先只对改动文件报告、积累实际误报后再决定是否阻断，不恢复已退役的注册表、逐实例台账或源码字面快照测试。
+文档检查（本地链接目标、锚点、状态一致性）在上表已核对的入口里没有常驻门禁；远端 reusable workflow 的具体检查项不在本仓维护，因此不能据此断言全部 CI 都不检查文档。若后续引入，先只对改动文件报告、积累实际误报后再决定是否阻断，不恢复已退役的注册表、逐实例台账或源码字面快照测试。
 
 ## 已收口材料（不作为当前施工依据）
 

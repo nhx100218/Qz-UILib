@@ -137,7 +137,7 @@ public class ChatToolbarIconsTest {
         int before = effectCount();
         ChatToolbarIcons.attach(rt, icon, "reset-current");
         rt.flush();
-        publishFromWorker(entry, "markFailed", null);
+        publishPermanentFailure(entry);
         rt.__tickFrame(1L);
         rt.flush();
         Assert.assertEquals("<", icon.getText());
@@ -177,6 +177,48 @@ public class ChatToolbarIconsTest {
                 failure.set(error);
             }
         }, "toolbar-icon-test-publisher");
+        worker.start();
+        worker.join(5000L);
+        Assert.assertFalse("测试发布线程必须已结束", worker.isAlive());
+        if (failure.get() != null) throw new AssertionError(failure.get());
+    }
+
+    /**
+     * 以 worker 身份写入一次「终态失败」。
+     *
+     * <p>生产入口只有 {@code markFailed(FailureKind)}；失败分类是私有枚举，测试按参数类型取
+     * {@code PERMANENT} 常量，不为夹具在实现里保留无参包装。</p>
+     */
+    private void publishPermanentFailure(Entry entry) throws Exception {
+        Method markFailed = null;
+        for (Method candidate : Entry.class.getDeclaredMethods()) {
+            if ("markFailed".equals(candidate.getName()) && candidate.getParameterTypes().length == 1) {
+                markFailed = candidate;
+                break;
+            }
+        }
+        Assert.assertNotNull("Entry 应有按分类写入失败的入口", markFailed);
+        markFailed.setAccessible(true);
+        Object permanent = null;
+        // 私有枚举即便有 public values()，跨包反射调用仍会 IllegalAccessException；
+        // 用 Class 读取枚举常量，再调用公开基类 Enum.name()，不反射枚举自己的方法。
+        for (Object constant : markFailed.getParameterTypes()[0].getEnumConstants()) {
+            if ("PERMANENT".equals(((Enum<?>) constant).name())) {
+                permanent = constant;
+                break;
+            }
+        }
+        Assert.assertNotNull("失败分类应有 PERMANENT", permanent);
+        AtomicReference<Throwable> failure = new AtomicReference<Throwable>();
+        final Method target = markFailed;
+        final Object failureKind = permanent;
+        Thread worker = new Thread(() -> {
+            try {
+                target.invoke(entry, failureKind);
+            } catch (Throwable error) {
+                failure.set(error);
+            }
+        }, "toolbar-icon-test-failure-publisher");
         worker.start();
         worker.join(5000L);
         Assert.assertFalse("测试发布线程必须已结束", worker.isAlive());
