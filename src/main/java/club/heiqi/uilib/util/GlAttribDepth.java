@@ -56,7 +56,8 @@ public final class GlAttribDepth {
             DepthAccessor resolved = accessor;
             return resolved == null ? -1 : resolved.read();
         } catch (Throwable throwable) {
-            // 原为静默 return -1；改为首次 WARN 留痕（对齐 5d-D5 assertClientThread 先例），
+            // 原为静默 return -1；改为首次 WARN 留痕（对齐 5d-D5 线程断言的 warn-once 先例，
+            // 现址 client.hud.HudClientThread），
             // 语义不变：Angelica 缺席/反射失败时降级 no-op。
             if (!readWarned) {
                 readWarned = true;

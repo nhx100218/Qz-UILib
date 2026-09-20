@@ -131,10 +131,31 @@ public class ClientProxy extends CommonProxy {
      */
     @SubscribeEvent
     public void onClientDisconnect(FMLNetworkEvent.ClientDisconnectionFromServerEvent event) {
+        // HUD 宿主（保留窗口 + 独立 scene runtime）与渲染分级表的写路径只允许客户端主线程
+        // （契约见 club.heiqi.uilib.client.hud.HudClientThread）。本事件在网络线程触发，直接调用
+        // 会与主线程的 WorldEvent.Unload 清理并发——实测退出世界时 SceneHudHost.clearWorld 的
+        // 保留窗口表在迭代中被清空（ConcurrentModificationException）。与下方候选源 SPI 同口径：
+        // 入队客户端主线程，由 ClientTickEvent 排空后再清理；排空通道在断连后照常运行（主菜单也
+        // tick），故清理不会被漏掉。
         try {
-            uiHudRenderListener.clearWorld();
+            MainThreadDispatcher.getInstance().enqueue(NetSide.CLIENT, new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        uiHudRenderListener.clearWorld();
+                    } catch (RuntimeException exception) {
+                        MyMod.LOG.warn("HUD 断连清理异常", exception);
+                    }
+                    try {
+                        // 世界退出/断连：分级结论与跨世界旧图标不再有效（与候选源 release() 同批语义）。
+                        ItemRenderTierRegistry.invalidateAll("client_disconnect");
+                    } catch (RuntimeException exception) {
+                        MyMod.LOG.warn("渲染分级表失效异常", exception);
+                    }
+                }
+            });
         } catch (RuntimeException exception) {
-            MyMod.LOG.warn("HUD 断连清理异常", exception);
+            MyMod.LOG.warn("HUD/分级表断连清理派发异常", exception);
         }
         try {
             DocumentRemoteImageCache.getInstance().clear();
@@ -145,12 +166,6 @@ public class ClientProxy extends CommonProxy {
             NetService.getInstance().onClientDisconnected();
         } catch (RuntimeException exception) {
             MyMod.LOG.warn("网络层断连清理异常", exception);
-        }
-        try {
-            // 世界退出/断连：分级结论与跨世界旧图标不再有效（与候选源 release() 同批语义）。
-            ItemRenderTierRegistry.invalidateAll("client_disconnect");
-        } catch (RuntimeException exception) {
-            MyMod.LOG.warn("渲染分级表失效异常", exception);
         }
         try {
             // 候选源 SPI 的会话级释放点（SPI javadoc：客户端断开 / 世界退出；**不在关屏调用**）。

@@ -36,6 +36,10 @@ import java.util.Set;
  *
  * <p>无输入、无 Widget/GuiScreen 生命周期；四角锚定数学在 {@link SceneAnchorResolver}（视口模式），
  * 宿主只做「挂载 → 测量 → 锚定/堆叠 → 帧循环」。</p>
+ *
+ * <p><b>线程契约</b>：本类全部方法只在 Minecraft 客户端主线程调用，{@link #render} 与
+ * {@link #clearWorld()} 入口由 {@link HudClientThread} 断言。宿主状态（保留窗口表、放置快照）
+ * 用的是非线程安全容器，跨线程访问不会当场失败，而以迭代器失效等形式在无关位置炸开。</p>
  */
 public final class SceneHudHost {
     private final HudRegistry registry;
@@ -71,6 +75,7 @@ public final class SceneHudHost {
 
     /** 在 render 主线程执行一帧：挂载缺失窗口 → 测量 → 四角锚定 → 逐窗口帧循环。 */
     public void render(UiRenderBackend backend, int width, int height, boolean inWorld, boolean screenOpen) {
+        HudClientThread.assertCurrent("SceneHudHost.render");
         final float globalScale = scaleSetting.get();
         HudInsets safeInsets = registry.avoidanceInsets(this::reportProviderFailure);
         safeInsets = new HudInsets(Math.round(safeInsets.getLeft() * globalScale),
@@ -262,13 +267,60 @@ public final class SceneHudHost {
         return lastSafeInsets;
     }
 
-    /** 释放世界级保留窗口；registration 仍归 mod 持有，重连后自动重建。 */
+    /**
+     * 释放世界级保留窗口；registration 仍归 mod 持有，重连后自动重建。
+     *
+     * <p><b>逐个「摘账 → 释放」</b>：{@code dispose()} 会跑 mod 侧清理回调（scene effect / 外接工具栏），
+     * 回调若重入本宿主，保留窗口表的迭代器不得因此失效，故先摘账（{@code remove}）再释放；
+     * 且单个窗口释放失败<b>不短路其余窗口</b>——全部尝试后把首个失败作为主异常、其余作为 suppressed
+     * 统一重抛（对齐仓内 {@code appendFailure} 口径）。若失败即中断，已摘账的窗口会连同剩余窗口一起
+     * 失去释放机会。</p>
+     *
+     * <p><b>线程契约</b>：只在客户端主线程调用。跨线程并发清理实测会让保留窗口表在迭代中被清空
+     * （{@code ConcurrentModificationException}）——调用方（网络线程的断连清理）必须经
+     * {@code MainThreadDispatcher} 派发到主线程。</p>
+     */
     public void clearWorld() {
-        for (RetainedWindow window : retained.values()) window.dispose();
-        retained.clear();
+        HudClientThread.assertCurrent("SceneHudHost.clearWorld");
+        Throwable failure = null;
+        for (String id : new ArrayList<String>(retained.keySet())) {
+            RetainedWindow window = retained.remove(id);
+            if (window == null) {
+                continue;
+            }
+            try {
+                window.dispose();
+            } catch (RuntimeException exception) {
+                failure = appendFailure(failure, exception);
+            } catch (Error error) {
+                failure = appendFailure(failure, error);
+            }
+        }
         lastPlacements.clear();
         lastLogicalPlacements.clear();
         lastScales.clear();
+        if (failure != null) {
+            throwUnchecked(failure);
+        }
+    }
+
+    /** 合并失败：首个失败为主异常，同实例不自挂 suppressed（对齐仓内统一口径）。 */
+    private static Throwable appendFailure(Throwable primary, Throwable next) {
+        if (primary == null) {
+            return next;
+        }
+        if (primary != next) {
+            primary.addSuppressed(next);
+        }
+        return primary;
+    }
+
+    /** 原样重抛 unchecked 失败（dispose 契约不抛受检异常）。 */
+    private static void throwUnchecked(Throwable failure) {
+        if (failure instanceof RuntimeException) {
+            throw (RuntimeException) failure;
+        }
+        throw (Error) failure;
     }
 
     private void disposeInactive(Set<String> active) {
