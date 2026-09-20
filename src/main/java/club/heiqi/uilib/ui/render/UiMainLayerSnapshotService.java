@@ -757,6 +757,20 @@ public final class UiMainLayerSnapshotService {
         snapshot.textureId = 0;
     }
 
+    /**
+     * 解析本次捕获的读取源 framebuffer id。
+     *
+     * <p>{@code requestedReadFramebufferId >= 0} 时用它：合成层活动时该值由
+     * {@code PaintContextCompositor} 捕获为「父层的 draw 目标」，即父层内容真正所在的 FBO
+     * （见该处 R3 定论）。</p>
+     *
+     * <p><b>回退路径仍取 read 绑定（判据 5 的显式契约）</b>：按 R3 的同一推理，这一格在宿主 draw/read
+     * 分离时也不是"父层内容所在"，本应取 draw。刻意保留 read 的原因是它与 Angelica HUD caching 的现有
+     * 抑制机制耦合：HUD 缓存把整层 HUD 画进独立 FBO 时，此处读到的正是那个缓存 FBO（玻璃因此采到没有
+     * 世界画面的内容），{@code client.AngelicaHudCachingSuppressor} 的存在即建立在"此处会读到缓存 FBO"
+     * 之上。改成 draw 会同时改变该抑制机制的触发语义，属需要真机复测的产品侧决定（审查 §六之二 挂账），
+     * 故此处只写清契约、不改行为。</p>
+     */
     private static int resolveReadFramebufferId(int requestedReadFramebufferId) {
         if (requestedReadFramebufferId >= 0) {
             return requestedReadFramebufferId;

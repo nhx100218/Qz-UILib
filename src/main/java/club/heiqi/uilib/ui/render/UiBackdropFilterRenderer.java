@@ -179,9 +179,9 @@ final class UiBackdropFilterRenderer {
             return "texture-copy-unavailable";
         }
 
-        int backdropReadFramebufferId = context.getCurrentBackdropReadFramebufferId();
+        int backdropSourceFramebufferId = context.getCurrentBackdropSourceFramebufferId();
         MainLayerSnapshot snapshot = snapshotService.acquireSnapshot(screenWidth, screenHeight,
-                backdropReadFramebufferId, context.getMainLayerContentRevisionForDiagnostics(), sampleRegion,
+                backdropSourceFramebufferId, context.getMainLayerContentRevisionForDiagnostics(), sampleRegion,
                 blurRadius);
         if (snapshot == null) {
             return snapshotUnavailableDetail(snapshotService);
@@ -218,7 +218,8 @@ final class UiBackdropFilterRenderer {
             GL14.glBlendEquation(GL14.GL_FUNC_ADD);
             // 直接修改主层时保留已有 alpha；读取父 FBO 写入独立透明层时必须建立覆盖率，
             // 否则会留下 RGB 非零/alpha 为零的像素，回贴时变成加色。RGB 始终按覆盖率混合。
-            boolean isolatedLayer = backdropReadFramebufferId >= 0;
+            // 合成层活动时（>=0）快照源是父层 FBO：这是"读取父 FBO 写入独立透明层"的判据，不是状态泄漏标记。
+            boolean isolatedLayer = backdropSourceFramebufferId >= 0;
             GL11.glColorMask(true, true, true, true);
             GL14.glBlendFuncSeparate(GL11.GL_SRC_ALPHA, GL11.GL_ONE_MINUS_SRC_ALPHA,
                     GL11.GL_ZERO, isolatedLayer ? GL11.GL_ONE_MINUS_SRC_ALPHA : GL11.GL_ONE);

@@ -20,8 +20,11 @@ import org.lwjgl.opengl.GLContext;
 /**
  * UI 帧入口的 GL 状态围栏：保存进入时的真实 GL 状态，帧体执行后（含异常路径）逐项恢复。
  *
- * <p>HUD 帧（{@code client.UiHudRenderListener}）与屏幕帧（{@code ui.screen.McScreenBridge}）共用同一套语义，
- * 避免两个入口的状态恢复集合出现分叉。实例、快照和查询缓冲均跨帧复用。</p>
+ * <p>三个宿主入口共用同一套语义：HUD 帧（{@code client.UiHudRenderListener}）、屏幕帧
+ * （{@code ui.screen.McScreenBridge}）与 headless 帧（{@code internal.devtools.headless.HeadlessSession}，
+ * 围栏起点在它自己的 {@code GlOffscreenSurface.beginFrame} 之后——surface 的 FBO/viewport/clear 属该 surface
+ * 的自身契约，且 {@code readPixels()} 依赖"当前绑定的仍是 surface FBO"）。
+ * 实例、快照和查询缓冲均跨帧复用（HUD 与屏幕各持静态实例，headless 持有会话级实例）。</p>
  *
  * <p>本围栏**不使用 attrib 属性组栈**（状态靠手工清单快照 + 显式恢复），故 attrib 栈在 core profile 下的
  * 可用性不影响本类的恢复语义；第三方 attrib 泄漏的兜底与「深度不可读时降级 no-op」的留痕由
@@ -34,8 +37,10 @@ import org.lwjgl.opengl.GLContext;
  * restoreOptionalBindings）——帧中途切到第三个单元并在那里绑定/改 enable 位不会被本围栏还原。</p>
  *
  * <p>不覆盖的状态与理由：纹理环境（texEnv）与混合方程不在快照内，由帧内的离屏层
- * （{@code UiRenderTarget} 进层时的全量 attrib 帧）与各组件自恢复；矩阵栈内容与 client 顶点数组
- * 状态亦不在此围栏职责内（矩阵栈只在 capture 时压围栏帧、帧末按量弹出）。改动本类的快照集合前请先读
+ * （{@code UiRenderTarget} 进层时的全量 attrib 帧）与各组件自恢复；client 顶点数组状态亦不在此围栏
+ * 职责内。矩阵是<b>按内容</b>捕获与写回的（{@code readFloats} + {@code glLoadMatrix}），不压栈——
+ * PROJECTION 栈规格下限只有 2 层，围栏再占一层会把帧内文本路径推爆（headless 实测 GL_STACK_OVERFLOW）。
+ * 改动本类的快照集合前请先读
  * {@code docs/历史报告/审查/2026-09-19-GL使用自净审查.md}。</p>
  */
 public final class UiFrameGlStateFence {
@@ -57,8 +62,7 @@ public final class UiFrameGlStateFence {
         void readBooleans(int name, boolean[] target);
         void setEnabled(int capability, boolean enabled);
         void matrixMode(int mode);
-        void pushMatrix();
-        void popMatrix();
+        void loadMatrix(float[] values);
         void activeTexture(int unit);
         void bindTexture2d(int texture);
         void blendFuncSeparate(int srcRgb, int dstRgb, int srcAlpha, int dstAlpha);
@@ -174,7 +178,7 @@ public final class UiFrameGlStateFence {
         snapshot.hasBuffers = gl.supportsBuffers();
         snapshot.hasFramebuffer = gl.supportsFramebuffer();
         captureOptionalBindings();
-        pushMatrices();
+        captureMatrices();
     }
 
     /** 能力存在时捕获 texture0、入口 active unit 与现代对象 binding。 */
@@ -208,63 +212,24 @@ public final class UiFrameGlStateFence {
         }
     }
 
-    /** 矩阵 capture 部分失败时回滚所有已完成的 push，并恢复入口 mode。 */
-    private void pushMatrices() {
-        boolean projectionPushed = false;
-        boolean modelviewPushed = false;
-        try {
-            gl.matrixMode(GL11.GL_PROJECTION);
-            gl.pushMatrix();
-            projectionPushed = true;
-            gl.matrixMode(GL11.GL_MODELVIEW);
-            gl.pushMatrix();
-            modelviewPushed = true;
-            gl.matrixMode(snapshot.matrixMode);
-        } catch (RuntimeException failure) {
-            rollbackCaptureMatrices(projectionPushed, modelviewPushed, failure);
-        } catch (Error failure) {
-            rollbackCaptureMatrices(projectionPushed, modelviewPushed, failure);
-        }
+    /**
+     * 捕获 PROJECTION / MODELVIEW 的矩阵<b>内容</b>（不压栈）。
+     *
+     * <p>为什么不用 {@code glPushMatrix}：PROJECTION 栈的规格下限只有 2 层，而帧内
+     * {@code UiHostRenderSupport.beginMainUiFrame} 与字体围栏（{@code FontRenderStateGuard}）各自还要压一层。
+     * 围栏再占一层会把文本路径推爆——实测 headless 文本页报 GL 错误码 1283（GL_STACK_OVERFLOW），
+     * 而同一构型下只有本围栏的额外压栈是新变量。改为读回真实矩阵 + 帧末 {@code glLoadMatrix} 写回后，
+     * 既不占任何栈深度，恢复的也是进入时的真实值（判据 1 优于栈快照）。</p>
+     *
+     * <p>栈失衡不在本围栏职责内：帧体自身以 try-with-resources 配对（{@code MainFrameScope}）；
+     * 第三方泄漏的层级既不是本围栏压入的，也不由本围栏代偿。</p>
+     */
+    private void captureMatrices() {
+        gl.readFloats(GL11.GL_PROJECTION_MATRIX, snapshot.projectionMatrix);
+        gl.readFloats(GL11.GL_MODELVIEW_MATRIX, snapshot.modelviewMatrix);
     }
 
-    /** 回滚 capture 阶段已压入的矩阵；回滚失败优先抛出。 */
-    private void rollbackCaptureMatrices(boolean projectionPushed, boolean modelviewPushed, Throwable captureFailure) {
-        Throwable rollbackFailure = null;
-        if (modelviewPushed) {
-            try {
-                gl.matrixMode(GL11.GL_MODELVIEW);
-                gl.popMatrix();
-            } catch (RuntimeException failure) {
-                rollbackFailure = failure;
-            } catch (Error failure) {
-                rollbackFailure = failure;
-            }
-        }
-        if (projectionPushed) {
-            try {
-                gl.matrixMode(GL11.GL_PROJECTION);
-                gl.popMatrix();
-            } catch (RuntimeException failure) {
-                rollbackFailure = appendFailure(rollbackFailure, failure);
-            } catch (Error failure) {
-                rollbackFailure = appendFailure(rollbackFailure, failure);
-            }
-        }
-        try {
-            gl.matrixMode(snapshot.matrixMode);
-        } catch (RuntimeException failure) {
-            rollbackFailure = appendFailure(rollbackFailure, failure);
-        } catch (Error failure) {
-            rollbackFailure = appendFailure(rollbackFailure, failure);
-        }
-        if (rollbackFailure != null) {
-            rollbackFailure = appendFailure(rollbackFailure, captureFailure);
-            throwUnchecked(rollbackFailure);
-        }
-        throwUnchecked(captureFailure);
-    }
-
-    /** 恢复所有显式状态；矩阵栈、active texture 与 matrix mode 在末尾恢复。 */
+    /** 恢复所有显式状态；矩阵内容、active texture 与 matrix mode 在末尾恢复。 */
     private void restore() {
         gl.beginRestore();
         Throwable failure = null;
@@ -284,7 +249,7 @@ public final class UiFrameGlStateFence {
         }
         try {
             gl.matrixMode(GL11.GL_MODELVIEW);
-            gl.popMatrix();
+            gl.loadMatrix(snapshot.modelviewMatrix);
         } catch (RuntimeException restoreFailure) {
             failure = appendFailure(failure, restoreFailure);
         } catch (Error restoreFailure) {
@@ -292,7 +257,7 @@ public final class UiFrameGlStateFence {
         }
         try {
             gl.matrixMode(GL11.GL_PROJECTION);
-            gl.popMatrix();
+            gl.loadMatrix(snapshot.projectionMatrix);
         } catch (RuntimeException restoreFailure) {
             failure = appendFailure(failure, restoreFailure);
         } catch (Error restoreFailure) {
@@ -403,6 +368,9 @@ public final class UiFrameGlStateFence {
         private int drawFramebufferBinding, readFramebufferBinding;
         private final float[] depthClearValue = new float[1];
         private final float[] color = new float[4];
+        /** 矩阵内容快照：不压栈，帧末按值写回（PROJECTION 栈规格下限只有 2 层）。 */
+        private final float[] projectionMatrix = new float[16];
+        private final float[] modelviewMatrix = new float[16];
         private final int[] scissor = new int[4];
         private final boolean[] colorMask = new boolean[4];
         private final int[] viewport = new int[4];
@@ -450,8 +418,12 @@ public final class UiFrameGlStateFence {
             if (enabled) GL11.glEnable(capability); else GL11.glDisable(capability);
         }
         @Override public void matrixMode(int mode) { GL11.glMatrixMode(mode); }
-        @Override public void pushMatrix() { GL11.glPushMatrix(); }
-        @Override public void popMatrix() { GL11.glPopMatrix(); }
+        @Override public void loadMatrix(float[] values) {
+            floats.clear();
+            floats.put(values, 0, 16);
+            floats.flip();
+            GL11.glLoadMatrix(floats);
+        }
         @Override public void activeTexture(int unit) { GL13.glActiveTexture(unit); }
         @Override public void bindTexture2d(int texture) { GL11.glBindTexture(GL11.GL_TEXTURE_2D, texture); }
         @Override public void blendFuncSeparate(int srcRgb, int dstRgb, int srcAlpha, int dstAlpha) {

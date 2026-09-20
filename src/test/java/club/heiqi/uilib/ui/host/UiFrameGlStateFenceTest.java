@@ -33,8 +33,8 @@ public class UiFrameGlStateFenceTest {
         entry.assertRestored(gl);
         assertEquals(1, gl.captureCalls);
         assertEquals(1, gl.restoreCalls);
-        assertEquals(1, gl.projectionDepth);
-        assertEquals(2, gl.modelviewDepth);
+        assertEquals("PROJECTION 与 MODELVIEW 各读一次", 2, gl.matrixReadCalls);
+        assertEquals("恢复必须按值写回两处矩阵（不压栈）", 2, gl.loadMatrixCalls);
     }
 
     @Test
@@ -89,26 +89,24 @@ public class UiFrameGlStateFenceTest {
         assertEquals(1, gl.restoreCalls);
     }
 
+    /**
+     * 栈安全回归（P6，headless 实测）：矩阵保护必须按内容读回/写回，不得占用矩阵栈深度。
+     *
+     * <p>PROJECTION 栈的规格下限只有 2 层，帧内 {@code beginMainUiFrame} 与字体围栏各自还要压一层；
+     * 围栏再压一层会把文本路径推爆——headless 文本页实测 {@code glGetError=1283}
+     * （GL_STACK_OVERFLOW）。故本用例钉"读两处内容 + 写回两处内容"，而不是钉压栈次数。</p>
+     */
     @Test
-    public void partialMatrixCaptureFailureRollsBackCompletedPush() {
+    public void matrixProtectionCapturesContentInsteadOfPushingStackFrames() {
         FakeGlAccess gl = new FakeGlAccess();
-        gl.failPushNumber = 2;
-        int entryMode = gl.matrixMode;
-        int entryProjectionDepth = gl.projectionDepth;
-        int entryModelviewDepth = gl.modelviewDepth;
+        UiFrameGlStateFence guard = new UiFrameGlStateFence(gl);
 
-        try {
-            new UiFrameGlStateFence(gl).run(() -> fail("不得执行业务"));
-            fail("第二次矩阵 push 失败必须向外传播");
-        } catch (IllegalStateException expected) {
-            assertEquals("push-2", expected.getMessage());
-        }
+        guard.run(gl::mutateMatrices);
 
-        assertEquals(entryMode, gl.matrixMode);
-        assertEquals(entryProjectionDepth, gl.projectionDepth);
-        assertEquals(entryModelviewDepth, gl.modelviewDepth);
-        assertEquals(1, gl.popCalls);
-        assertEquals(0, gl.restoreCalls);
+        assertEquals("PROJECTION 与 MODELVIEW 各读一次", 2, gl.matrixReadCalls);
+        assertEquals("恢复必须写回两处矩阵内容", 2, gl.loadMatrixCalls);
+        assertArrayEquals("MODELVIEW 内容必须回到入口值", gl.modelviewEntry, gl.modelviewMatrix, 0.0F);
+        assertArrayEquals("PROJECTION 内容必须回到入口值", gl.projectionEntry, gl.projectionMatrix, 0.0F);
     }
 
     @Test
@@ -235,6 +233,8 @@ public class UiFrameGlStateFenceTest {
         private final int[] scissor;
         private final boolean[] colorMask;
         private final int[] viewport;
+        private final float[] projectionMatrix;
+        private final float[] modelviewMatrix;
 
         EntryState(FakeGlAccess gl) {
             enabled = new HashMap<Integer, Boolean>(gl.enabled);
@@ -254,6 +254,7 @@ public class UiFrameGlStateFenceTest {
             depthClearValue = gl.depthClearValue;
             color = gl.color.clone(); scissor = gl.scissor.clone(); colorMask = gl.colorMask.clone();
             viewport = gl.viewport.clone();
+            projectionMatrix = gl.projectionMatrix.clone(); modelviewMatrix = gl.modelviewMatrix.clone();
         }
 
         /** 逐项断言所有显式入口状态已恢复。 */
@@ -277,6 +278,8 @@ public class UiFrameGlStateFenceTest {
             assertEquals(depthClearValue, gl.depthClearValue, 0.0F);
             assertArrayEquals(color, gl.color, 0.0F); assertArrayEquals(scissor, gl.scissor);
             assertArrayEquals(colorMask, gl.colorMask); assertArrayEquals(viewport, gl.viewport);
+            assertArrayEquals("PROJECTION 矩阵内容必须按值恢复", projectionMatrix, gl.projectionMatrix, 0.0F);
+            assertArrayEquals("MODELVIEW 矩阵内容必须按值恢复", modelviewMatrix, gl.modelviewMatrix, 0.0F);
         }
     }
 
@@ -289,7 +292,13 @@ public class UiFrameGlStateFenceTest {
         private boolean programSupported = true, vertexArraySupported = true;
         private boolean framebufferSupported = true;
         private int matrixMode = GL11.GL_MODELVIEW, activeTexture = GL13.GL_TEXTURE1;
-        private int projectionDepth = 1, modelviewDepth = 2;
+        /** 入口矩阵内容（刻意非单位阵，便于证伪"没恢复"与"写回默认值"）。 */
+        private final float[] projectionEntry = { 1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F,
+                0.0F, 0.0F, 1.0F, 0.0F, 0.5F, 0.5F, 0.0F, 1.0F };
+        private final float[] modelviewEntry = { 2.0F, 0.0F, 0.0F, 0.0F, 0.0F, 2.0F, 0.0F, 0.0F,
+                0.0F, 0.0F, 2.0F, 0.0F, 0.25F, 0.75F, 0.0F, 2.0F };
+        private final float[] projectionMatrix = projectionEntry.clone();
+        private final float[] modelviewMatrix = modelviewEntry.clone();
         private int blendSrcRgb = 31, blendDstRgb = 32, blendSrcAlpha = 33, blendDstAlpha = 34;
         private int stencilFunction = 41, stencilReference = 42, stencilValueMask = 43, stencilWriteMask = 44;
         private int stencilFail = 45, stencilDepthFail = 46, stencilDepthPass = 47;
@@ -302,7 +311,7 @@ public class UiFrameGlStateFenceTest {
         private final boolean[] colorMask = { true, false, true, false };
         private final int[] viewport = { 4, 5, 640, 360 };
         private int captureCalls, restoreCalls, activeTextureCalls, programCalls;
-        private int vertexArrayCalls, bufferCalls, pushCalls, popCalls, failPushNumber, framebufferCalls;
+        private int vertexArrayCalls, bufferCalls, matrixReadCalls, loadMatrixCalls, framebufferCalls;
         private RuntimeException captureFailure;
         private Throwable restoreFailure;
         private Object viewportReadTarget, colorReadTarget;
@@ -328,6 +337,13 @@ public class UiFrameGlStateFenceTest {
             program = 12; vertexArray = 13; arrayBuffer = 14; elementBuffer = 15; depthMask = true;
             drawFramebufferBinding = 16; readFramebufferBinding = 17; depthFunc = 18; depthClearValue = 0.75F;
             fill(color, 0.9F); fill(scissor, 99); fill(colorMask, true); fill(viewport, 88);
+            mutateMatrices();
+        }
+
+        /** 改写两处矩阵内容（不含单位阵，确保"没恢复"可被断言抓到）。 */
+        void mutateMatrices() {
+            fill(projectionMatrix, -1.0F);
+            fill(modelviewMatrix, -2.0F);
         }
 
         @Override public void beginCapture() {
@@ -390,6 +406,14 @@ public class UiFrameGlStateFenceTest {
                 target[0] = depthClearValue;
                 return;
             }
+            if (name == GL11.GL_PROJECTION_MATRIX) {
+                matrixReadCalls++; System.arraycopy(projectionMatrix, 0, target, 0, 16);
+                return;
+            }
+            if (name == GL11.GL_MODELVIEW_MATRIX) {
+                matrixReadCalls++; System.arraycopy(modelviewMatrix, 0, target, 0, 16);
+                return;
+            }
             if (name != GL11.GL_CURRENT_COLOR) throw new AssertionError("unexpected float vector " + name);
             colorReadTarget = target; System.arraycopy(color, 0, target, 0, 4);
         }
@@ -402,14 +426,10 @@ public class UiFrameGlStateFenceTest {
             else enabled.put(capability, value);
         }
         @Override public void matrixMode(int mode) { matrixMode = mode; }
-        @Override public void pushMatrix() {
-            pushCalls++;
-            if (pushCalls == failPushNumber) throw new IllegalStateException("push-" + pushCalls);
-            if (matrixMode == GL11.GL_PROJECTION) projectionDepth++; else modelviewDepth++;
-        }
-        @Override public void popMatrix() {
-            popCalls++;
-            if (matrixMode == GL11.GL_PROJECTION) projectionDepth--; else modelviewDepth--;
+        @Override public void loadMatrix(float[] values) {
+            loadMatrixCalls++;
+            float[] target = matrixMode == GL11.GL_PROJECTION ? projectionMatrix : modelviewMatrix;
+            System.arraycopy(values, 0, target, 0, 16);
         }
         @Override public void activeTexture(int unit) { activeTextureCalls++; activeTexture = unit; }
         @Override public void bindTexture2d(int texture) { textureBindings.put(activeTexture, texture); }

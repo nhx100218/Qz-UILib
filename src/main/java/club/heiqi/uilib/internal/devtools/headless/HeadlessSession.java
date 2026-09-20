@@ -23,6 +23,7 @@ import club.heiqi.uilib.internal.devtools.glass.GlassLabHost;
 import club.heiqi.uilib.internal.devtools.playground.TestPlaygroundHost;
 import club.heiqi.uilib.ui.diagnostic.UiPerformanceMonitor;
 import club.heiqi.uilib.ui.env.UiEnvironment;
+import club.heiqi.uilib.ui.host.UiFrameGlStateFence;
 import club.heiqi.uilib.ui.host.UiHostRenderSupport;
 import club.heiqi.uilib.ui.render.BackdropQuality;
 import club.heiqi.uilib.ui.render.BackdropQualityService;
@@ -60,6 +61,8 @@ public final class HeadlessSession implements AutoCloseable {
     private final UiMainLayerSnapshotService mainLayerSnapshotService;
     private final HeadlessInputSource inputSource;
     private final SceneRuntime runtime;
+    /** 帧围栏：与 HUD/屏幕共用同一实现，使三个宿主入口的恢复集合对称（GL 自净审查 R19）。 */
+    private final UiFrameGlStateFence frameGlStateFence = new UiFrameGlStateFence();
     /** 装配期产生的进程外痕迹（配置页的临时配置目录）清理动作，可为 null。 */
     private final Runnable hostCleanup;
     private boolean closed;
@@ -564,6 +567,15 @@ public final class HeadlessSession implements AutoCloseable {
     private void advanceOneFrame(int renderedFrames) {
         renderContext.resetFrame();
         surface.beginFrame(request.background());
+        // R19：三个宿主入口（HUD / 屏幕 / headless）共用同一帧围栏。headless 虽独占自己的 context，
+        // 但帧内组件（离屏层、快照服务、滤镜回放）同样改写 GL 状态；逐帧恢复让每一帧不继承上一帧的残留。
+        // 围栏起点刻意在 surface.beginFrame 之后：surface 的 FBO/viewport/clear 属 GlOffscreenSurface
+        // 自身契约（报告 I6），且 readPixels 依赖「当前绑定的仍是 surface FBO」。
+        frameGlStateFence.run(() -> renderOneFrameWithinFence(renderedFrames));
+    }
+
+    /** 帧体：由 {@link #advanceOneFrame} 的帧围栏包裹，不单独对外暴露。 */
+    private void renderOneFrameWithinFence(int renderedFrames) {
         // 帧前置语义（正交投影 / viewport / 混合状态）与生产 MC 宿主共用 UiHostRenderSupport.beginMainUiFrame：
         // headless 自建这一段的后果是顶点落在单位矩阵下被整体裁掉——表现为「绘制无像素」而不是报错。
         try (UiHostRenderSupport.MainFrameScope frameScope =

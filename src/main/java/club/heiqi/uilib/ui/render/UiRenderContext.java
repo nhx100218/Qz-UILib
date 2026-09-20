@@ -326,10 +326,11 @@ public class UiRenderContext implements UiRenderBackend {
     }
 
     /**
-     * 返回当前 paint context 合成器中可用的 backdrop 读取 framebuffer id。
+     * 返回当前 paint context 合成器中可用的 backdrop 源 framebuffer id（父层内容所在，见
+     * {@code PaintContextCompositor#captureParentFramebufferId()} 的 R3 定论）。
      */
-    int getCurrentBackdropReadFramebufferId() {
-        return paintContextCompositor.getCurrentBackdropReadFramebufferId();
+    int getCurrentBackdropSourceFramebufferId() {
+        return paintContextCompositor.getCurrentBackdropSourceFramebufferId();
     }
 
     /**
@@ -371,18 +372,19 @@ public class UiRenderContext implements UiRenderBackend {
      * 出口 {@code glEnable}）与 current color；出口把 TEXTURE_2D 置开、color 置白（UI 基元终态），
      * <b>不读回进入值</b>——它不是自净方法，回收责任在帧级：</p>
      * <ul>
-     *   <li><b>受保护入口</b>：HUD 帧（{@code client.UiHudRenderListener} 的 {@code HUD_GL_STATE_FENCE}）与
-     *       屏幕帧（{@code ui.screen.McScreenBridge} 的 {@code SCREEN_GL_STATE_FENCE}）。
+     *   <li><b>受保护入口（三处）</b>：HUD 帧（{@code client.UiHudRenderListener} 的
+     *       {@code HUD_GL_STATE_FENCE}）、屏幕帧（{@code ui.screen.McScreenBridge} 的
+     *       {@code SCREEN_GL_STATE_FENCE}）与 headless 帧（{@code internal.devtools.headless.HeadlessSession}
+     *       的会话级围栏，P6 起）。
      *       帧围栏 {@link club.heiqi.uilib.ui.host.UiFrameGlStateFence} 已把 enable 位、blend 因子与 color
      *       纳入快照并逐项恢复；纹理绑定只覆盖 unit0 与帧入口 active unit <b>两个单元</b>——本方法作用于
      *       「当时的 active unit」，故第三个单元上的 enable/绑定写入不在围栏覆盖内。</li>
      *   <li><b>离屏区间</b>另有 {@code UiRenderTarget.begin()/end()} 的
      *       {@code glPushAttrib(GL_ALL_ATTRIB_BITS)} 帧；它只包离屏层区间，不是每帧必经。</li>
-     *   <li><b>无围栏路径</b>：headless 帧循环（{@code internal.devtools.headless.HeadlessSession}）与屏幕入口
-     *       共用 {@code beginMainUiFrame}，但没有帧围栏——该路径独占自己的 GL context（报告 §四 I6），
-     *       不指望本契约回收；仓外自建 {@code UiRenderContext} 的调用点同此，须自带等价保护域；
-     *       deferred 回放（{@code UiHostRenderSupport.prepareDeferredPostMainReplayState}）同样不受帧围栏覆盖，
-     *       当前未接线，接线时必须自带保护域。</li>
+     *   <li><b>无围栏路径</b>：仓外自建 {@code UiRenderContext} 的调用点（构造器公开）须自带等价保护域；
+     *       deferred 回放（{@code UiHostRenderSupport.prepareDeferredPostMainReplayState}）不受帧围栏覆盖，
+     *       当前未接线，接线时必须自带保护域。headless 帧自 P6 起已并入帧围栏，不再属此类；
+     *       {@code GlOffscreenSurface} 自身的 FBO/viewport/clear 仍在围栏之外（它独占 context，报告 §四 I6）。</li>
      * </ul>
      * <p>帧入口 {@code prepareMainUiRenderState} 不设 TEXTURE_2D，故此处的 {@code glEnable(TEXTURE_2D)}
      * 是「向帧内基元终态收敛」的约定（同帧后续绘制看到确定状态），不是恢复原值。与宿主图片委托的分工：

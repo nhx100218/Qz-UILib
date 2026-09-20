@@ -16,7 +16,7 @@ import cpw.mods.fml.common.gameevent.TickEvent;
  * <p>Angelica 的 HUD caching 会把整个 HUD 渲染进<b>独立的 HUD framebuffer</b>，并按
  * {@code hudCachingFPS}（默认 20）复用像素。而 UILib 的背景滤镜（液态玻璃）需要把「当前主层画面」
  * 抓成快照再模糊合成——{@code UiBackdropFilterRenderer} 经
- * {@code UiRenderContext#getCurrentBackdropReadFramebufferId()} 取源，无隔离层时回落到
+ * {@code UiRenderContext#getCurrentBackdropSourceFramebufferId()} 取源，无隔离层时回落到
  * <b>当前 read framebuffer</b>（{@code UiMainLayerSnapshotService#resolveReadFramebufferId}）。
  * HUD 缓存 FBO 里没有世界画面 ⇒ 玻璃采样到空/黑，HUD 卡片呈黑底；而打开 GUI 时缓存路径不生效，
  * 同一张卡片正常透明。真机 GTNH 2.8.4 + Angelica {@code 1.0.0-beta66b} 已复现：把

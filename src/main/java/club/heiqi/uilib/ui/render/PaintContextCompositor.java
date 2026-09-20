@@ -6,6 +6,7 @@ import java.util.Deque;
 import java.util.List;
 
 import org.lwjgl.opengl.GL11;
+import org.lwjgl.opengl.GL30;
 
 import club.heiqi.uilib.util.UiNumbers;
 
@@ -157,7 +158,7 @@ public final class PaintContextCompositor {
         boolean layerBegun = false;
         try {
             layer = borrowLayer(screenWidth, screenHeight);
-            int parentFramebufferId = GL11.glGetInteger(org.lwjgl.opengl.GL30.GL_FRAMEBUFFER_BINDING);
+            int parentFramebufferId = captureParentFramebufferId();
             layer.begin();
             layerBegun = true;
             UiRenderContext.applyClipSnapshot(clipSnapshot, screenHeight);
@@ -224,7 +225,7 @@ public final class PaintContextCompositor {
         boolean modelviewPushed = false;
         try {
             layer = borrowLayer(screenWidth, screenHeight);
-            int parentFramebufferId = GL11.glGetInteger(org.lwjgl.opengl.GL30.GL_FRAMEBUFFER_BINDING);
+            int parentFramebufferId = captureParentFramebufferId();
             layer.begin();
             layerBegun = true;
             // MODELVIEW 归 I（覆盖外层可能存在的祖先 T），保留 PROJECTION（段内子树命令+scissor 用屏幕坐标）
@@ -325,7 +326,31 @@ public final class PaintContextCompositor {
         return !frameStack.isEmpty() && frameStack.peek().active;
     }
 
-    int getCurrentBackdropReadFramebufferId() {
+    /**
+     * 捕获父层当前内容的 framebuffer id，作为 backdrop 采样源。
+     *
+     * <p><b>为什么取 draw 绑定而不是 read 绑定（GL 自净审查 R3 定论）</b>：backdrop 的语义是
+     * 「父层正在画进去的那个 FBO 里已有的像素」——GL 的像素写入全部路由到 draw 绑定。消费方
+     * {@code UiMainLayerSnapshotService} 拿到这个 id 后把它绑成 {@code GL_READ_FRAMEBUFFER} 再
+     * {@code glCopyTexSubImage2D}，那是同一个对象的第二次绑定，不是"取错了 pname"。宿主 draw/read
+     * 分离时，进入本合成器时的 read 绑定指向的是另一块目标，采它才会错。这里用名字更明确的
+     * {@code GL_DRAW_FRAMEBUFFER_BINDING}（与 {@code GL_FRAMEBUFFER_BINDING} 同值 0x8CA6）。</p>
+     *
+     * <p><b>刻意不加能力门控</b>：能走到本行就证明本 context 的 FBO 入口可用——{@code borrowLayer} 到
+     * 这里必然已经过一次 {@code UiRenderTarget.ensureSize}（无 FBO 扩展时 {@code glGenFramebuffers}
+     * 先抛，push* 的既有 catch 会 fail-closed）。按版本档位（{@code capabilities().OpenGL30}）门控反而会
+     * 误伤「GL 2.1 + {@code ARB_framebuffer_object}」构型：那里层可用而档位为 false，会把默认 framebuffer
+     * 当成父层内容（独立复核 C2c）。同帧的 {@code UiRenderTarget:61-62}、{@code UiMainLayerSnapshotService:498-500}
+     * 也都是裸查，口径一致。</p>
+     */
+    private static int captureParentFramebufferId() {
+        return GL11.glGetInteger(GL30.GL_DRAW_FRAMEBUFFER_BINDING);
+    }
+
+    /**
+     * 返回当前活动层的 backdrop 源 framebuffer id（父层的 draw 目标；无活动层返回 -1）。
+     */
+    int getCurrentBackdropSourceFramebufferId() {
         if (!isCurrentLayerActive()) {
             return -1;
         }

@@ -193,6 +193,36 @@ public class GlStateRecoveryContractTest {
                 occurrences(body, "recordFailure(rollbackFailure,") >= 4);
     }
 
+    /**
+     * R3（P6 定论）：backdrop 在合成层内的采样源取父层的 <b>draw</b> 绑定；无合成层的回退仍取 read
+     * 绑定，且这是写明的有意契约。
+     *
+     * <p>原判"取 draw 绑定 = 采样错 FBO"不成立：内容在父层 draw 目标里，快照服务再把它绑成
+     * {@code GL_READ_FRAMEBUFFER} 做 {@code glCopyTexSubImage2D}——宿主 draw/read 分离时，采 read 侧
+     * 才是错的。回退路径保留 read 与 Angelica HUD caching 的抑制机制耦合，改行为需真机复测，
+     * 故此用例把两侧语义分别钉住。</p>
+     */
+    @Test
+    public void backdropSourceFramebufferUsesDrawBindingAndDocumentsReadFallback() throws Exception {
+        String compositor = source(COMPOSITOR);
+        assertEquals("两处父层捕获都必须走同一个捕获入口", 2,
+                occurrences(compositor, "int parentFramebufferId = captureParentFramebufferId();"));
+        assertTrue("必须读 draw 绑定（语义等同 GL_FRAMEBUFFER_BINDING，名字写明避免再被读成误用）",
+                compositor.contains("GL11.glGetInteger(GL30.GL_DRAW_FRAMEBUFFER_BINDING);"));
+        assertFalse("不得残留易误读的 GL_FRAMEBUFFER_BINDING 查询（全限定形态）",
+                compositor.contains("glGetInteger(org.lwjgl.opengl.GL30.GL_FRAMEBUFFER_BINDING)"));
+        assertFalse("不得残留易误读的 GL_FRAMEBUFFER_BINDING 查询",
+                compositor.contains("glGetInteger(GL30.GL_FRAMEBUFFER_BINDING)"));
+        assertTrue("访问器名必须写明是采样源而不是 read 绑定",
+                compositor.contains("int getCurrentBackdropSourceFramebufferId()"));
+
+        String fallback = blockAfter(source(SNAPSHOT_SERVICE), "private static int resolveReadFramebufferId(");
+        assertTrue("无合成层的回退仍取 read 绑定（有意契约，与 Angelica HUD caching 抑制耦合）",
+                fallback.contains("GL11.glGetInteger(GL30.GL_READ_FRAMEBUFFER_BINDING);"));
+        assertTrue("回退语义必须在源码里写明理由（判据 5）",
+                source(SNAPSHOT_SERVICE).contains("回退路径仍取 read 绑定"));
+    }
+
     /** 读取 UTF-8 生产源码。 */
     private static String source(Path path) throws Exception {
         return new String(Files.readAllBytes(path), StandardCharsets.UTF_8);
