@@ -28,8 +28,10 @@ import org.lwjgl.opengl.GLContext;
  * {@code util.GlAttribDepth} 承担（warn-once，见该类 javadoc）。GL 自净审查 N13 的处置口径以此为准。</p>
  *
  * <p>快照覆盖：enable 位、blend 因子、颜色、scissor box、stencil 全量、colorMask/depthMask、
- * viewport、深度函数与 CLEAR 深度、active texture 与各单元 TEXTURE_2D 绑定、program、VAO、
- * array/element buffer，以及能力档位（OpenGL30）存在时的 framebuffer 绑定。</p>
+ * viewport、深度函数与 CLEAR 深度、active texture、<b>unit0 与入口 active unit 两个单元</b>的
+ * TEXTURE_2D 绑定与 enable 位、program、VAO、array/element buffer，以及能力档位（OpenGL30）存在时的
+ * framebuffer 绑定。其余纹理单元不在快照内（捕获与恢复都只走这两个单元，见 captureOptionalBindings/
+ * restoreOptionalBindings）——帧中途切到第三个单元并在那里绑定/改 enable 位不会被本围栏还原。</p>
  *
  * <p>不覆盖的状态与理由：纹理环境（texEnv）与混合方程不在快照内，由帧内的离屏层
  * （{@code UiRenderTarget} 进层时的全量 attrib 帧）与各组件自恢复；矩阵栈内容与 client 顶点数组

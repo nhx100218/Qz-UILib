@@ -7,20 +7,14 @@ package club.heiqi.uilib.ui.image;
  * 自定义实现属于受信任的窄委托：架构禁令禁用原版包装类（Tessellator 等），绘制走直接 GL
  * 或 UILib 自有管线。</p>
  *
- * <p><strong>实现必须自己守恒的状态</strong>（attrib 帧与调用方事务都回收不了，实测口径见
- * {@code docs/历史报告/审查/2026-09-19-GL使用自净审查.md}）：client array
- * （{@code glEnableClientState} 一族）与 <strong>矩阵栈内容</strong>（栈帧本身不受 attrib 帧管辖），
- * 外加不得遗留 GL error。program 与 VAO/VBO 由帧围栏的显式快照兜底
- * （{@link club.heiqi.uilib.ui.host.UiFrameGlStateFence} 捕获并恢复 program、VAO、
- * array/element buffer），但在没有帧围栏的宿主路径上仍应由实现自己还原。
- * matrix mode <em>不</em>在此列——attrib 帧与帧围栏都能恢复它，实现仍应尽量还原。</p>
+ * <p><strong>实现必须自己守恒状态</strong>：返回前不得遗留 program、VAO/VBO、client array、
+ * matrix stack、attrib 组状态或其它可观测的宿主状态漂移，且不得遗留 GL error。判据是
+ * 「实现自己能恢复」，不是「外层恰好兜住」——调用点持有的 {@code UiRenderTarget.begin()/end()}
+ * attrib 帧与 {@link club.heiqi.uilib.ui.host.UiFrameGlStateFence} 只是额外保险。参考实现：
+ * {@link MinecraftHostImageRenderer} 把整段 GL 写入包在 {@link GlStateScope} 内。</p>
  *
- * <p><strong>固定管线状态由调用方回收</strong>：实现可以为自己这一次绘制设置 FFP 状态
- * （enable 位、blendFunc、colorMask/depthMask、color、depthFunc、纹理绑定、matrix mode 等），
- * 前提是调用点外层持有 {@code UiRenderTarget.begin()/end()}（含 attrib 帧）或
- * {@link club.heiqi.uilib.ui.host.UiFrameGlStateFence} 级别的回收。现网唯一调用点
- * {@code UiRenderContext.drawUncachedHostImage} 就在该事务内，并另行显式还原 matrix mode；
- * 新增调用点必须先满足该前提，否则本委托设置的 FFP 状态会直接漂移到宿主。</p>
+ * <p>两点实测口径（见 {@code docs/历史报告/审查/2026-09-19-GL使用自净审查.md} §一/§六）：
+ * attrib 属性组栈不覆盖 program 绑定与矩阵栈内容，实现不能指望它；矩阵栈内容若被压入必须自己弹出。</p>
  */
 public interface HostImageRenderer extends AutoCloseable {
 
@@ -35,7 +29,14 @@ public interface HostImageRenderer extends AutoCloseable {
      */
     void render(HostImageSource source, int left, int top, int right, int bottom);
 
-    /** 释放 renderer 自身拥有的宿主资源。 */
+    /**
+     * 释放 renderer 自身拥有的宿主资源。
+     *
+     * <p>状态归属与本接口的绘制契约分开：{@code close} 不保证在 {@link GlStateScope} 一类状态边界内执行，
+     * 但删纹理可能把「恰好绑定着它」的当前单元绑定清 0（{@code glDeleteTextures} 的驱动语义）。
+     * 实现若在 close 里做这种可能改变宿主绑定的删除，必须自己写清调用前提；调用方把它接到帧中路径时必须
+     * 自带帧级围栏（{@link club.heiqi.uilib.ui.host.UiFrameGlStateFence}）。</p>
+     */
     @Override
     default void close() {
         // 大多数普通图片 renderer 不持有资源。

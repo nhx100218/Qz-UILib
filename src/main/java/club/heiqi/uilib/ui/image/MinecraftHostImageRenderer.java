@@ -6,6 +6,7 @@ import java.io.InputStream;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
+import java.util.Objects;
 
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.texture.DynamicTexture;
@@ -21,12 +22,22 @@ import org.lwjgl.opengl.GL14;
 
 /**
  * 基于 Minecraft 运行时的普通 texture/bitmap 渲染实现。
+ *
+ * <p><strong>GL 状态自净（N23）</strong>：本实现自己守恒全部 GL 写入——{@code prepareHostImageState} /
+ * {@code preparePlainTextureQuadState} / {@code applyImageBlendState} 改写的 FFP 状态
+ * （depth test/func/mask、cull、lighting、{@code GL_RESCALE_NORMAL}、colorMask、color、blend）
+ * 与宿主纹理绑定，连同动态位图上传，全部 GL 写入路径都跑在自有 {@link GlStateScope} 内
+ * （attrib + client attrib 帧，program/VAO/active texture/矩阵模式的显式恢复，异常路径同样恢复）；
+ * 零写入的可用性早退判定留在 scope 之外。调用点
+ * {@code UiRenderContext.drawUncachedHostImage} 持有的 {@code UiRenderTarget.begin()} attrib 帧
+ * 只是外层额外保险，不作为回收依据。</p>
  */
 public final class MinecraftHostImageRenderer implements HostImageRenderer {
 
     private final Map<String, ResourceLocation> dynamicImageTextures = new HashMap<String, ResourceLocation>();
     private final HostTextureResourceChecker textureResourceChecker;
     private final DynamicImageTextureAccess dynamicImageTextureAccess;
+    private final GlStateScope glStateScope;
 
     /**
      * 创建使用 Minecraft 资源管理器检查纹理可用性的宿主图片渲染器。
@@ -47,12 +58,19 @@ public final class MinecraftHostImageRenderer implements HostImageRenderer {
     /** 创建可注入动态纹理生命周期访问器的测试实例。 */
     MinecraftHostImageRenderer(HostTextureResourceChecker textureResourceChecker,
             DynamicImageTextureAccess dynamicImageTextureAccess) {
+        this(textureResourceChecker, dynamicImageTextureAccess, new GlStateScope());
+    }
+
+    /** 创建可注入 GL 状态 scope 的测试实例（N23：全部 GL 写入路径在自有 scope 内运行）。 */
+    MinecraftHostImageRenderer(HostTextureResourceChecker textureResourceChecker,
+            DynamicImageTextureAccess dynamicImageTextureAccess, GlStateScope glStateScope) {
         this.textureResourceChecker = textureResourceChecker == null
                 ? new MinecraftTextureResourceChecker()
                 : textureResourceChecker;
         this.dynamicImageTextureAccess = dynamicImageTextureAccess == null
                 ? new MinecraftDynamicImageTextureAccess()
                 : dynamicImageTextureAccess;
+        this.glStateScope = Objects.requireNonNull(glStateScope, "glStateScope");
     }
 
     @Override
@@ -60,33 +78,34 @@ public final class MinecraftHostImageRenderer implements HostImageRenderer {
         if (source == null || right <= left || bottom <= top) {
             return;
         }
+        // N23：一次委托的全部 GL 写入都跑在自有 scope 内（动态位图上传与四边形绘制同属写入，
+        // 只包后者会漏掉前者）；scope 恢复 attrib/client attrib 栈、program、VAO、active/client-active
+        // texture 与矩阵模式，异常路径同样恢复。
+        //
+        // 前置判定刻意留在 scope 之外：纹理可用性查询会读资源流（在持有 attrib 帧期间做 I/O 不合适），
+        // 且零写入出口不该付 push/pop + 数次 getInteger 的代价。
         if (source.getKind() == HostImageSource.Kind.BUFFERED_IMAGE) {
-            renderBufferedImage(source, left, top, right, bottom);
+            BufferedImage image = source.getBufferedImage();
+            if (image == null || image.getWidth() <= 0 || image.getHeight() <= 0) {
+                return;
+            }
+            glStateScope.run(() -> renderBufferedImageRegion(source, image, left, top, right, bottom));
             return;
         }
         if (source.getKind() == HostImageSource.Kind.TEXTURE) {
-            renderTexture(source, left, top, right, bottom);
+            ResourceLocation texture = source.getTexture();
+            if (texture == null || !textureResourceChecker.isTextureAvailable(texture)) {
+                return;
+            }
+            glStateScope.run(() -> renderTextureRegion(texture, source.getRegionU(), source.getRegionV(),
+                    source.getRegionWidth(), source.getRegionHeight(), source.getTextureWidth(),
+                    source.getTextureHeight(), left, top, right, bottom));
         }
     }
 
-    private void renderTexture(HostImageSource source, int left, int top, int right, int bottom) {
-        ResourceLocation texture = source.getTexture();
-        if (texture == null) {
-            return;
-        }
-        if (!textureResourceChecker.isTextureAvailable(texture)) {
-            return;
-        }
-        renderTextureRegion(texture, source.getRegionU(), source.getRegionV(), source.getRegionWidth(),
-                source.getRegionHeight(), source.getTextureWidth(), source.getTextureHeight(), left, top, right,
-                bottom);
-    }
-
-    private void renderBufferedImage(HostImageSource source, int left, int top, int right, int bottom) {
-        BufferedImage image = source.getBufferedImage();
-        if (image == null || image.getWidth() <= 0 || image.getHeight() <= 0) {
-            return;
-        }
+    /** scope 内的 bitmap 路径：先解析/上传动态纹理，再绘制区域。 */
+    private void renderBufferedImageRegion(HostImageSource source, BufferedImage image, int left, int top, int right,
+            int bottom) {
         ResourceLocation texture = resolveDynamicImageTexture(source);
         if (texture == null) {
             return;
@@ -110,7 +129,16 @@ public final class MinecraftHostImageRenderer implements HostImageRenderer {
         return texture;
     }
 
-    /** 删除本 renderer 上传的全部动态位图纹理。 */
+    /**
+     * 删除本 renderer 上传的全部动态位图纹理。
+     *
+     * <p>本方法属资源生命周期路径而非绘制委托，不在自有 {@link GlStateScope} 边界内：{@code glDeleteTextures}
+     * 不改 attrib 组状态，但若被删纹理恰好是当前单元绑定，该绑定会被驱动清 0。生产唯一调用链是屏幕关闭边界
+     * （{@code McScreenBridge.onGuiClosed → UiRuntimeAdapters.close → OwnedResources.close}）——该边界之后同一
+     * GL context 仍继续渲染，所以「宿主状态随 context 消失」并不成立；实际风险为零的原因是本 renderer 的自建
+     * 动态纹理只在自有 scope 内被绑定且随即恢复，close 时不可能处于绑定态。若将来把它接到帧中路径，
+     * 调用点必须自带帧级围栏（{@link club.heiqi.uilib.ui.host.UiFrameGlStateFence}）。</p>
+     */
     @Override
     public void close() {
         clearDynamicImageTextures();
@@ -161,14 +189,19 @@ public final class MinecraftHostImageRenderer implements HostImageRenderer {
 
     private void renderTextureRegion(ResourceLocation texture, int regionU, int regionV, int regionWidth,
             int regionHeight, int textureWidth, int textureHeight, int left, int top, int right, int bottom) {
-        Minecraft minecraft = Minecraft.getMinecraft();
         float u0 = (float) regionU / (float) textureWidth;
         float v0 = (float) regionV / (float) textureHeight;
         float u1 = (float) (regionU + regionWidth) / (float) textureWidth;
         float v1 = (float) (regionV + regionHeight) / (float) textureHeight;
+        // 绘制体：由 render 的 scope 边界保护（调用点 UiRenderTarget 的 attrib 帧只是外层额外保险）。
+        drawTexturedRegionQuad(texture, u0, v0, u1, v1, left, top, right, bottom);
+    }
 
+    /** 实际写入 GL 的绘制体；只允许在 {@code render} 的 {@link GlStateScope} 边界内调用。 */
+    private static void drawTexturedRegionQuad(ResourceLocation texture, float u0, float v0, float u1, float v1,
+            int left, int top, int right, int bottom) {
         prepareHostImageState();
-        minecraft.getTextureManager().bindTexture(texture);
+        Minecraft.getMinecraft().getTextureManager().bindTexture(texture);
         preparePlainTextureQuadState();
         applyImageBlendState();
         // 架构禁令:不使用原版包装类(Tessellator),直接 GL 立即模式

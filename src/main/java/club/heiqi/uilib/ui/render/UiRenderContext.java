@@ -366,6 +366,28 @@ public class UiRenderContext implements UiRenderBackend {
     /**
      * 绘制矩形。
      *
+     * <p><strong>GL 契约（N6）</strong>：本方法是每帧必跑的基元路径，写入 BLEND enable
+     * （{@code glEnable}）、{@code glBlendFuncSeparate}、TEXTURE_2D 的 enable 位（入口 {@code glDisable}、
+     * 出口 {@code glEnable}）与 current color；出口把 TEXTURE_2D 置开、color 置白（UI 基元终态），
+     * <b>不读回进入值</b>——它不是自净方法，回收责任在帧级：</p>
+     * <ul>
+     *   <li><b>受保护入口</b>：HUD 帧（{@code client.UiHudRenderListener} 的 {@code HUD_GL_STATE_FENCE}）与
+     *       屏幕帧（{@code ui.screen.McScreenBridge} 的 {@code SCREEN_GL_STATE_FENCE}）。
+     *       帧围栏 {@link club.heiqi.uilib.ui.host.UiFrameGlStateFence} 已把 enable 位、blend 因子与 color
+     *       纳入快照并逐项恢复；纹理绑定只覆盖 unit0 与帧入口 active unit <b>两个单元</b>——本方法作用于
+     *       「当时的 active unit」，故第三个单元上的 enable/绑定写入不在围栏覆盖内。</li>
+     *   <li><b>离屏区间</b>另有 {@code UiRenderTarget.begin()/end()} 的
+     *       {@code glPushAttrib(GL_ALL_ATTRIB_BITS)} 帧；它只包离屏层区间，不是每帧必经。</li>
+     *   <li><b>无围栏路径</b>：headless 帧循环（{@code internal.devtools.headless.HeadlessSession}）与屏幕入口
+     *       共用 {@code beginMainUiFrame}，但没有帧围栏——该路径独占自己的 GL context（报告 §四 I6），
+     *       不指望本契约回收；仓外自建 {@code UiRenderContext} 的调用点同此，须自带等价保护域；
+     *       deferred 回放（{@code UiHostRenderSupport.prepareDeferredPostMainReplayState}）同样不受帧围栏覆盖，
+     *       当前未接线，接线时必须自带保护域。</li>
+     * </ul>
+     * <p>帧入口 {@code prepareMainUiRenderState} 不设 TEXTURE_2D，故此处的 {@code glEnable(TEXTURE_2D)}
+     * 是「向帧内基元终态收敛」的约定（同帧后续绘制看到确定状态），不是恢复原值。与宿主图片委托的分工：
+     * <b>基元状态由帧级回收，{@code HostImageRenderer} 委托的状态由实现方自己回收。</b></p>
+     *
      * @param left 左侧坐标
      * @param top 顶部坐标
      * @param right 右侧坐标
@@ -981,6 +1003,8 @@ public class UiRenderContext implements UiRenderBackend {
                     }
                 }
                 try {
+                    // 事务自身收口：内置委托已按 HostImageRenderer 契约自净（N23 在 MinecraftHostImageRenderer
+                    // 里用 GlStateScope 恢复矩阵模式），此处覆盖未按契约自净的自定义 HostImageRenderer。
                     GL11.glMatrixMode(previousMatrixMode);
                 } catch (RuntimeException cleanupFailure) {
                     transactionFailure = preferCleanupFailure(transactionFailure, cleanupFailure);
