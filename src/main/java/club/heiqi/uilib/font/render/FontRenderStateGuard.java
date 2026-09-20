@@ -271,7 +271,7 @@ public class FontRenderStateGuard implements FontRenderStateExecutor {
             rollbackFailure = recordFailure(rollbackFailure, () -> gl.activeTexture(state.activeTexture));
         }
         // 逐步累积：任一步弹栈失败都不能跳过后续——否则矩阵栈会残留多层帧，
-        // 与 UiFrameGlStateFence.rollbackCaptureMatrices 的逐项写法对齐（独立复核 C 项）。
+        // 与 UiFrameGlStateFence.restore 的逐项累积写法对齐（独立复核 C 项）。
         if (matrixStacksPushed >= 3) {
             rollbackFailure = recordFailure(rollbackFailure, () -> popMatrixStack(GL11.GL_TEXTURE));
         }

@@ -156,9 +156,12 @@ public class UiRenderTarget {
             GL11.glEnd();
 
         } finally {
-            // 回绑必须在 finally 内：异常路径同样要还原入口绑定，否则「不依赖 attrib 栈」的目标在异常下失效。
-            GL11.glBindTexture(GL11.GL_TEXTURE_2D, previousTextureBinding);
-            GL11.glPopAttrib();
+            Throwable[] failure = new Throwable[1];
+            // 栈平衡优先（N9 口径）：popAttrib 必须先于后续回绑——原「先回绑再 pop」在回绑抛异常时会让
+            // attrib 帧永不弹出（P7 复核项）。回绑是冗余兜底：attrib 帧本身已实测恢复 per-unit 绑定。
+            restoreStep(failure, () -> GL11.glPopAttrib());
+            restoreStep(failure, () -> GL11.glBindTexture(GL11.GL_TEXTURE_2D, previousTextureBinding));
+            rethrowCloseFailure(failure[0]);
         }
     }
 
@@ -196,9 +199,12 @@ public class UiRenderTarget {
             GL11.glEnd();
 
         } finally {
-            // 回绑必须在 finally 内：异常路径同样要还原入口绑定，否则「不依赖 attrib 栈」的目标在异常下失效。
-            GL11.glBindTexture(GL11.GL_TEXTURE_2D, previousTextureBinding);
-            GL11.glPopAttrib();
+            Throwable[] failure = new Throwable[1];
+            // 栈平衡优先（N9 口径）：popAttrib 必须先于后续回绑——原「先回绑再 pop」在回绑抛异常时会让
+            // attrib 帧永不弹出（P7 复核项）。回绑是冗余兜底：attrib 帧本身已实测恢复 per-unit 绑定。
+            restoreStep(failure, () -> GL11.glPopAttrib());
+            restoreStep(failure, () -> GL11.glBindTexture(GL11.GL_TEXTURE_2D, previousTextureBinding));
+            rethrowCloseFailure(failure[0]);
         }
     }
 
@@ -255,10 +261,12 @@ public class UiRenderTarget {
             GL11.glEnd();
 
         } finally {
-            // 回绑必须在 finally 内：异常路径同样要还原入口绑定，否则「不依赖 attrib 栈」的目标在异常下失效。
-            GL11.glBindTexture(GL11.GL_TEXTURE_2D, previousTextureBinding);
-            GL11.glPopAttrib();
-            GL11.glColor4f(1.0F, 1.0F, 1.0F, 1.0F);
+            Throwable[] failure = new Throwable[1];
+            // 同上一处：pop 最先，颜色归一随后；任一步失败只累积，不跳过后续。
+            restoreStep(failure, () -> GL11.glPopAttrib());
+            restoreStep(failure, () -> GL11.glBindTexture(GL11.GL_TEXTURE_2D, previousTextureBinding));
+            restoreStep(failure, () -> GL11.glColor4f(1.0F, 1.0F, 1.0F, 1.0F));
+            rethrowCloseFailure(failure[0]);
         }
     }
 

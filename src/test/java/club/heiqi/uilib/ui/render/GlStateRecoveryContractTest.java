@@ -51,8 +51,9 @@ public class GlStateRecoveryContractTest {
     @Test
     public void textureRebindingHappensInsideFinally() throws Exception {
         String source = source(RENDER_TARGET);
+        // 针不带分号：P7 起三处回绑都在 restoreStep 的 lambda 里（"…previousTextureBinding));"）。
         assertEquals("三处回贴都要读回原值并回绑", 3,
-                occurrences(source, "GL11.glBindTexture(GL11.GL_TEXTURE_2D, previousTextureBinding);"));
+                occurrences(source, "GL11.glBindTexture(GL11.GL_TEXTURE_2D, previousTextureBinding)"));
         assertTrue("必须真的读回入口绑定", source.contains("int previousTextureBinding = GL11.glGetInteger(GL11.GL_TEXTURE_BINDING_2D);"));
         assertFalse("回绑必须搬进 finally，不能停在 try 体末尾",
                 source.contains("previousTextureBinding);\n        } finally {"));
@@ -221,6 +222,47 @@ public class GlStateRecoveryContractTest {
                 fallback.contains("GL11.glGetInteger(GL30.GL_READ_FRAMEBUFFER_BINDING);"));
         assertTrue("回退语义必须在源码里写明理由（判据 5）",
                 source(SNAPSHOT_SERVICE).contains("回退路径仍取 read 绑定"));
+    }
+
+    /**
+     * P7：背景滤镜 finally 的<b>在飞异常合并</b>——try 体失败必须与恢复失败合并，不得被 finally 的
+     * 抛出替换（P4 挂账项）。
+     *
+     * <p>为什么用源码结构：这条路径只有"try 体抛 + 恢复也抛"时才体现，纯 JVM 替身跑不出来；
+     * 而"改回裸 try/finally"是极易发生的回退（少写一个 catch 块即可），故钉结构不变量。</p>
+     */
+    @Test
+    public void backdropFinallyMergesInFlightBodyFailure() throws Exception {
+        String source = source(BACKDROP);
+        assertTrue("必须显式记录 try 体失败", source.contains("Throwable bodyFailure = null;"));
+        assertEquals("三个 catch 分支都要捕获（RuntimeException/LinkageError/Error；LinkageError 单列是为与"
+                + " GlStateScope/restoreStep 口径逐字对齐，语义上被 Error 覆盖）", 3,
+                occurrences(source, "bodyFailure = failure;"));
+        assertTrue("必须走仓内统一合并口径（恢复失败为主、try 体失败 suppressed、致命 Error 升级）",
+                source.contains("Throwable combined = appendFailure(restoreFailure, bodyFailure);"));
+        assertFalse("不得再出现裸 throwUnchecked(restoreFailure)（会替换在飞异常）",
+                source.contains("throwUnchecked(restoreFailure);"));
+        assertTrue("必须保留不可达出口的 fail-loud", occurrences(source, "try 体失败未被重抛") == 1);
+        assertTrue("合并结果必须真的作为抛出源（只留合并语句不抛会被 fail-loud 兜住，但异常类型退化）",
+                occurrences(source, "throwUnchecked(combined);") == 1);
+    }
+
+    /**
+     * P7 复核项：三处 present/composite 的 finally 必须"先弹 attrib 帧、再回绑"，且逐步累积失败。
+     *
+     * <p>原顺序是"先回绑再 pop"：回绑一旦抛异常，attrib 帧永不弹出（栈泄漏跨帧累积）。改为 restoreStep
+     * 累积后，pop 在最前，后续步骤失败不再跳过它。</p>
+     */
+    @Test
+    public void compositeFinallyPopsAttribBeforeRebindingTexture() throws Exception {
+        String source = source(RENDER_TARGET);
+        assertEquals("三处 finally 都要走累积口径", 3,
+                occurrences(source, "restoreStep(failure, () -> GL11.glPopAttrib());"));
+        assertFalse("不得再出现裸的「先回绑再 pop」序列",
+                source.contains("GL11.glBindTexture(GL11.GL_TEXTURE_2D, previousTextureBinding);\n"
+                        + "            GL11.glPopAttrib();"));
+        assertEquals("三处都要在末尾统一重抛（含 restoreAfterBegin 的既有出口）", 4,
+                occurrences(source, "rethrowCloseFailure(failure[0]);"));
     }
 
     /** 读取 UTF-8 生产源码。 */

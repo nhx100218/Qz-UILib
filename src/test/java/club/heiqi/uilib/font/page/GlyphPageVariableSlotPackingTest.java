@@ -236,6 +236,29 @@ public class GlyphPageVariableSlotPackingTest {
         Assert.assertEquals(0, gl.popClientAttribCount);
     }
 
+    /**
+     * P7 复核项：client 段闸门失败时，<b>已确认压入</b>的 attrib 帧必须被弹出。
+     *
+     * <p>原实现把 client 段的 push 与检查放在 try 之外，闸门一失败就直接退出方法，已确认的 attrib 帧
+     * 漏掉——这不是 R11 的"push 成功却报错"可疑窗口，而是确定泄漏。本用例钉住"闸门通过即记账、出口必弹"。</p>
+     */
+    @Test
+    public void failedClientAttribGateStillPopsConfirmedAttribFrame() {
+        FakeGlApi gl = new FakeGlApi();
+        gl.failNextClientAttribPush();
+        GlyphPage page = new GlyphPage(1, 0, 64, 64, 3, gl);
+
+        try {
+            page.getOrCreateTextureId();
+            Assert.fail("client attrib push error 必须中止 texture_init");
+        } catch (GlyphPage.GlyphUploadException expected) {
+            Assert.assertEquals("texture_init_client_attrib_push", expected.getPhase());
+        }
+
+        Assert.assertEquals("attrib 帧已确认压入，出口必须弹出", 1, gl.popAttribCount);
+        Assert.assertEquals("client 段闸门失败 ⇒ 该帧视为未压入，不弹", 0, gl.popClientAttribCount);
+    }
+
     private static BufferedImage opaqueImage(int width, int height) {
         BufferedImage image = new BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB);
         image.setRGB(width / 2, height / 2, 0xFF123456);
@@ -257,6 +280,7 @@ public class GlyphPageVariableSlotPackingTest {
         private boolean failTextureAllocation;
         private boolean failNextMipmap;
         private boolean failNextAttribPush;
+        private boolean failNextClientAttribPush;
         private boolean failNextPopAttrib;
         private boolean failNextSubImage;
         private int texSubImageCount;
@@ -278,6 +302,10 @@ public class GlyphPageVariableSlotPackingTest {
 
         void failTextureAllocation() {
             failTextureAllocation = true;
+        }
+
+        void failNextClientAttribPush() {
+            failNextClientAttribPush = true;
         }
 
         boolean sawNonTransparentUpload() {
@@ -347,6 +375,10 @@ public class GlyphPageVariableSlotPackingTest {
         public void pushClientAttrib(int mask) {
             pushClientAttribCount++;
             lastPushClientAttribMask = mask;
+            if (failNextClientAttribPush) {
+                failNextClientAttribPush = false;
+                pendingError = 1282;
+            }
         }
 
         @Override

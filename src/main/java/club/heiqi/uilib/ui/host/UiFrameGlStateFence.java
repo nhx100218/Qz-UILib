@@ -5,9 +5,6 @@ import java.nio.ByteOrder;
 import java.nio.FloatBuffer;
 import java.nio.IntBuffer;
 
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.Logger;
-
 import org.lwjgl.opengl.ContextCapabilities;
 import org.lwjgl.opengl.GL11;
 import org.lwjgl.opengl.GL13;
@@ -26,14 +23,22 @@ import org.lwjgl.opengl.GLContext;
  * 的自身契约，且 {@code readPixels()} 依赖"当前绑定的仍是 surface FBO"）。
  * 实例、快照和查询缓冲均跨帧复用（HUD 与屏幕各持静态实例，headless 持有会话级实例）。</p>
  *
- * <p>本围栏**不使用 attrib 属性组栈**（状态靠手工清单快照 + 显式恢复），故 attrib 栈在 core profile 下的
- * 可用性不影响本类的恢复语义；第三方 attrib 泄漏的兜底与「深度不可读时降级 no-op」的留痕由
- * {@code util.GlAttribDepth} 承担（warn-once，见该类 javadoc）。GL 自净审查 N13 的处置口径以此为准。</p>
+ * <p>本围栏**不使用 attrib 属性组栈**（状态靠手工清单快照 + 显式恢复）：attrib 栈在 core profile 下的
+ * 可用性只影响末尾的 {@code GlAttribDepth.popExcess} 兜底——它读不到深度时降级 no-op，首次留痕由
+ * {@code util.GlAttribDepth} 承担（warn-once，见该类 javadoc）。GL 自净审查 N13 的处置口径以此为准：
+ * 内层组件的 attrib 帧（{@code UiRenderTarget} / 字体守卫 / {@code GlStateScope} 等）在 core profile 下的
+ * 可用性<b>未离线判定</b>——历史记录（{@code docs/反馈层/errors/ERROR-2026-07-14-host-image-core-profile-texture-matrix.md}）
+ * 里的失败形态（深度查询返回 0、normalize 与双重围栏造成的伪下溢）属已随 323d25da 删除的旧机制，不能外推；
+ * 可外推的只是其环境前提（core profile 下"0 不是合法栈深度"）。且没有"push/pop 真不可用"的离线证据——
+ * 历史文档判的是<b>深度查询</b>语义。当前各站点也没有查询式能力探测（{@code GL_ATTRIB_STACK_DEPTH} 全仓
+ * 0 命中），故本轮不写投机性降级：静默降级会把"整帧中止"换成"状态静默漂移"，而多数站点的 attrib 帧就是
+ * 其唯一恢复机制；历史预防措施同样要求逐子能力探测 + 未知 GL error 必须 fail-closed。
+ * 真机探测清单与候选设计见审查报告 §三 N13。</p>
  *
  * <p>快照覆盖：enable 位、blend 因子、颜色、scissor box、stencil 全量、colorMask/depthMask、
  * viewport、深度函数与 CLEAR 深度、active texture、<b>unit0 与入口 active unit 两个单元</b>的
- * TEXTURE_2D 绑定与 enable 位、program、VAO、array/element buffer，以及能力档位（OpenGL30）存在时的
- * framebuffer 绑定。其余纹理单元不在快照内（捕获与恢复都只走这两个单元，见 captureOptionalBindings/
+ * TEXTURE_2D 绑定与 enable 位、program、VAO、array/element buffer，以及 FBO 入口可用（OpenGL30 档位
+ * 或 {@code ARB_framebuffer_object}，见 LwjglGlAccess 的能力判据）时的 framebuffer 绑定。其余纹理单元不在快照内（捕获与恢复都只走这两个单元，见 captureOptionalBindings/
  * restoreOptionalBindings）——帧中途切到第三个单元并在那里绑定/改 enable 位不会被本围栏还原。</p>
  *
  * <p>不覆盖的状态与理由：纹理环境（texEnv）与混合方程不在快照内，由帧内的离屏层
@@ -45,7 +50,6 @@ import org.lwjgl.opengl.GLContext;
  */
 public final class UiFrameGlStateFence {
 
-    private static final Logger LOG = LogManager.getLogger("QzUILib/UiFrameGlStateFence");
     /** 可注入的最小 GL 状态访问面。 */
     interface GlAccess {
         void beginCapture();
@@ -134,7 +138,7 @@ public final class UiFrameGlStateFence {
         }
     }
 
-    /** 捕获真实入口状态，并为 projection/modelview 各压入一个围栏帧。 */
+    /** 捕获真实入口状态；矩阵按内容读回，不压栈。 */
     private void capture() {
         gl.beginCapture();
         // 帧起点深度：帧末按量弹回，避免第三方（如 FFP 变体编译）在帧内多压的 attrib 帧跨帧累积。
@@ -218,11 +222,16 @@ public final class UiFrameGlStateFence {
      * <p>为什么不用 {@code glPushMatrix}：PROJECTION 栈的规格下限只有 2 层，而帧内
      * {@code UiHostRenderSupport.beginMainUiFrame} 与字体围栏（{@code FontRenderStateGuard}）各自还要压一层。
      * 围栏再占一层会把文本路径推爆——实测 headless 文本页报 GL 错误码 1283（GL_STACK_OVERFLOW），
-     * 而同一构型下只有本围栏的额外压栈是新变量。改为读回真实矩阵 + 帧末 {@code glLoadMatrix} 写回后，
-     * 既不占任何栈深度，恢复的也是进入时的真实值（判据 1 优于栈快照）。</p>
+     * 而同一构型下只有本围栏的额外压栈是新变量。注意规格下限（PROJECTION 2 层）不是实测值：
+     * 本机驱动上限为 4 层，重构前帧内峰值已 4/4、重构后 3/4（余量 1 层，见审查报告 §六之三）。
+     * 改为读回真实矩阵 + 帧末 {@code glLoadMatrix} 写回后，既不占任何栈深度，恢复的也是进入时的真实值
+     * （判据 1 优于栈快照）。</p>
      *
      * <p>栈失衡不在本围栏职责内：帧体自身以 try-with-resources 配对（{@code MainFrameScope}）；
-     * 第三方泄漏的层级既不是本围栏压入的，也不由本围栏代偿。</p>
+     * 第三方泄漏的层级既不是本围栏压入的，也不由本围栏代偿。代价要说清：内容写回作用于"当前栈顶"，
+     * 帧内若多压一层未弹，写回的是那一层的顶（入口内容不落回）；若多弹一层，旧压栈方案会在帧末暴露
+     * {@code GL_STACK_UNDERFLOW}，本方案则静默少一层——两种失衡都属帧体自身契约
+     * （{@code GlAttribDepth} 只弹 attrib 栈，不代偿矩阵栈）。</p>
      */
     private void captureMatrices() {
         gl.readFloats(GL11.GL_PROJECTION_MATRIX, snapshot.projectionMatrix);
@@ -389,14 +398,25 @@ public final class UiFrameGlStateFence {
 
         // 刻意不做 GL 查询式能力探测：core profile 下对已移除的栈参数查询会留下 GL 错误码，
         // 而本仓有「入口 GL error 必须为空」的契约（历史见 ERROR-2026-07-14 记录：内层探测清掉外层错误）。
-        // 不可用的留痕改在 run() 的 capture 失败路径上做（见该类 run 方法）。
+        // 本类没有需要留痕的降级分支（attrib 栈不用、FBO/纹理查询都有档位门），
+        // 第三方 attrib 泄漏与「深度不可读时降级 no-op」的 warn-once 由 util.GlAttribDepth 承担。
         @Override public void beginCapture() { }
         @Override public void beginRestore() { }
+        // 能力判据 = 档位或提供同一批无后缀入口的扩展：GL2.1 + ARB_* 构型下入口可用而档位为 false，
+        // 只看版本位会静默跳过整类恢复（P6 对合成器门控的定论同源，独立复核 F7-3）。
         @Override public boolean supportsActiveTexture() { return capabilities().OpenGL13; }
-        @Override public boolean supportsBuffers() { return capabilities().OpenGL15; }
-        @Override public boolean supportsProgram() { return capabilities().OpenGL20; }
-        @Override public boolean supportsVertexArray() { return capabilities().OpenGL30; }
-        @Override public boolean supportsFramebuffer() { return capabilities().OpenGL30; }
+        @Override public boolean supportsBuffers() {
+            return capabilities().OpenGL15 || capabilities().GL_ARB_vertex_buffer_object;
+        }
+        @Override public boolean supportsProgram() {
+            return capabilities().OpenGL20 || capabilities().GL_ARB_shader_objects;
+        }
+        @Override public boolean supportsVertexArray() {
+            return capabilities().OpenGL30 || capabilities().GL_ARB_vertex_array_object;
+        }
+        @Override public boolean supportsFramebuffer() {
+            return capabilities().OpenGL30 || capabilities().GL_ARB_framebuffer_object;
+        }
         @Override public boolean isEnabled(int capability) { return GL11.glIsEnabled(capability); }
         @Override public int getInteger(int name) { return GL11.glGetInteger(name); }
         @Override public void readIntegers(int name, int[] target) {

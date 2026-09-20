@@ -336,9 +336,11 @@ public final class PaintContextCompositor {
      * 分离时，进入本合成器时的 read 绑定指向的是另一块目标，采它才会错。这里用名字更明确的
      * {@code GL_DRAW_FRAMEBUFFER_BINDING}（与 {@code GL_FRAMEBUFFER_BINDING} 同值 0x8CA6）。</p>
      *
-     * <p><b>刻意不加能力门控</b>：能走到本行就证明本 context 的 FBO 入口可用——{@code borrowLayer} 到
-     * 这里必然已经过一次 {@code UiRenderTarget.ensureSize}（无 FBO 扩展时 {@code glGenFramebuffers}
-     * 先抛，push* 的既有 catch 会 fail-closed）。按版本档位（{@code capabilities().OpenGL30}）门控反而会
+     * <p><b>刻意不加能力门控</b>：层若走新建路径，{@code UiRenderTarget.ensureSize} 里的
+     * {@code glGenFramebuffers} 在无 FBO 入口时会先抛，push* 的既有 catch 直接 fail-closed，本行到不了；
+     * 层若走池化复用且尺寸命中，{@code ensureSize} 不发任何 GL 调用就返回——那种组合要求"层来自另一个
+     * context"或运行期档位变化，库内两条生产宿主单 context、合成器与 context 同生命周期，故当前不可达
+     * （P6 复核 E5 的边界，仍记在此以免被后来的调用路径推翻）。按版本档位（{@code capabilities().OpenGL30}）门控反而会
      * 误伤「GL 2.1 + {@code ARB_framebuffer_object}」构型：那里层可用而档位为 false，会把默认 framebuffer
      * 当成父层内容（独立复核 C2c）。同帧的 {@code UiRenderTarget:61-62}、{@code UiMainLayerSnapshotService:498-500}
      * 也都是裸查，口径一致。</p>

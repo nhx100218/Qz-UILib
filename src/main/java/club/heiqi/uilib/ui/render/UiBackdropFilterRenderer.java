@@ -199,6 +199,9 @@ final class UiBackdropFilterRenderer {
         boolean stateCaptured = false;
         boolean drewBackdrop = false;
         boolean fixedPipelineClip = false;
+        // P7：显式捕获 try 体失败，供 finally 与恢复失败合并。原先的裸 try/finally 在「try 体正在抛 +
+        // 恢复步骤也抛」时会用 finally 的异常替换在飞异常（P4 挂账），诊断信息丢失。
+        Throwable bodyFailure = null;
         try {
             context.pushClip(left, top, right, bottom, 0);
             clipPushed = true;
@@ -265,6 +268,13 @@ final class UiBackdropFilterRenderer {
                     fixedPipelinePathDetail(sampleCount, effect, snapshot));
             drewBackdrop = true;
             return null;
+        } catch (RuntimeException failure) {
+            bodyFailure = failure;
+        } catch (LinkageError failure) {
+            // LinkageError 单列只为与 GlStateScope.run / restoreStep 的口径逐字对齐；语义上它已被 catch (Error) 覆盖。
+            bodyFailure = failure;
+        } catch (Error failure) {
+            bodyFailure = failure;
         } finally {
             // 逐步恢复 + 失败累积：前项抛异常不得跳过后续（原实现 glUseProgram 失败会让 attrib 帧
             // 与 clip 都不弹，releaseSnapshot 也被跳过，GL 自净审查 N9）。
@@ -332,17 +342,17 @@ final class UiBackdropFilterRenderer {
                     }
                 });
             }
-            if (restoreFailure != null) {
-                // 已知窗口（独立复核登记，未在本批闭合）：try 体正在抛异常时，此处的 finally 抛出会
-                // 替换在飞异常（未挂 suppressed）。彻底闭合需要消除 try 体内的多处 return、改成
-                // 「记录返回值 → finally 只恢复 → 统一抛出」的样板结构，改动面大于本批范围，
-                // 故先在此声明契约与触发条件：仅在「恢复步骤抛异常」且「try 体也在抛」时丢失原始异常，
-                // 恢复动作本身不受影响（restoreStep 逐步累积）。
-                throwUnchecked(restoreFailure);
+            // 在飞异常合并（P4 挂账 → P7 闭合）：恢复失败为主异常、try 体失败挂 suppressed；若 try 体
+            // 失败是致命 Error 而恢复失败不是，按仓内统一口径把它升为主异常（appendFailure/isFatal）。
+            // 两者都为空时不抛出：正常返回与提前 return 的返回值不受影响。
+            Throwable combined = appendFailure(restoreFailure, bodyFailure);
+            if (combined != null) {
+                throwUnchecked(combined);
             }
         }
-
-
+        // 编译器的可达性出口：正常路径在 try 体内 return，异常路径必在 finally 重抛，此处不可达。
+        // 若将来有人改坏合并逻辑让 try 体失败被静默吞掉，宁可 fail-loud 也不要静默返回"成功"。
+        throw new IllegalStateException("背景滤镜：try 体失败未被重抛（不可达出口被触达）");
     }
 
     /**

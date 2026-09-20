@@ -765,11 +765,11 @@ public final class UiMainLayerSnapshotService {
      * （见该处 R3 定论）。</p>
      *
      * <p><b>回退路径仍取 read 绑定（判据 5 的显式契约）</b>：按 R3 的同一推理，这一格在宿主 draw/read
-     * 分离时也不是"父层内容所在"，本应取 draw。刻意保留 read 的原因是它与 Angelica HUD caching 的现有
-     * 抑制机制耦合：HUD 缓存把整层 HUD 画进独立 FBO 时，此处读到的正是那个缓存 FBO（玻璃因此采到没有
-     * 世界画面的内容），{@code client.AngelicaHudCachingSuppressor} 的存在即建立在"此处会读到缓存 FBO"
-     * 之上。改成 draw 会同时改变该抑制机制的触发语义，属需要真机复测的产品侧决定（审查 §六之二 挂账），
-     * 故此处只写清契约、不改行为。</p>
+     * 分离时也不是"父层内容所在"，本应取 draw（P6 复核 E6 修正：宿主若以 {@code GL_FRAMEBUFFER} 绑定缓存
+     * FBO，则 read 与 draw 是同一对象，改 pname 既不改采样对象也不改抑制触发语义——原先"与该抑制机制
+     * 耦合"的表述过强）。保留 read 的真实理由是<b>行为冻结</b>：{@code client.AngelicaHudCachingSuppressor}
+     * 的抑制路径就是按"此处读到 HUD 缓存 FBO"的真机 A/B 记录建立的，改行为需要真机复测（审查 §六之二
+     * 挂账）。故此处只写清契约、不改行为。</p>
      */
     private static int resolveReadFramebufferId(int requestedReadFramebufferId) {
         if (requestedReadFramebufferId >= 0) {

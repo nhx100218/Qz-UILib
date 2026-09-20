@@ -13,7 +13,8 @@ import org.lwjgl.opengl.GL11;
  *
  * <p>Angelica 模拟固定管线时部分第三方渲染路径（如 FFP 着色器变体编译期间）存在
  * glPushAttrib 未配对弹出的缺陷，累积到上限后抛 "Attrib stack overflow"。
- * UILib 在自身状态边界（图标 scope / 字体守卫 / 屏幕帧）读取真实深度，
+ * UILib 在自身状态边界（图标 scope / 字体守卫 / 屏幕帧 {@code McScreenBridge} 与帧围栏
+ * {@code UiFrameGlStateFence}，后者自 P3/R19 起）读取真实深度，
  * 把边界内第三方多压入的深度按量弹出，避免泄漏跨帧累积。</p>
  *
  * <p>深度入口按"新→旧"解析，三种形态互斥，统一收敛为 {@link DepthAccessor}：</p>

@@ -17,8 +17,9 @@ import club.heiqi.uilib.util.UiNumbers;
  * 而它们都<strong>不在</strong>帧围栏的快照集合内（围栏只恢复固定管线状态与绑定类对象）。
  * 因此所有入口必须在 {@code UiMainLayerSnapshotService} 的
  * {@code glPushAttrib(GL_ALL_ATTRIB_BITS)} 信封内调用（现网调用链均满足，见 GL 自净审查 N18）。
- * 唯一自带保存/恢复的是矩阵助手 {@code drawAtlasTextureQuad}（矩阵栈内容与 matrix mode
- * 都不受 attrib 帧管辖）。</p>
+ * 唯一自带保存/恢复的是矩阵助手 {@code drawAtlasTextureQuad}：它以显式 push/pop 自守，因为本方法
+ * 运行在 attrib 信封内、对帧围栏没有依赖（帧围栏自 P6 起也按内容恢复 PROJECTION/MODELVIEW，
+ * 但那是帧边界上的第二道，不是这里的依据）。</p>
  */
 final class SnapshotTileAtlasAssembler {
 
@@ -240,8 +241,9 @@ final class SnapshotTileAtlasAssembler {
     /**
      * 在当前 draw framebuffer 上按 top-left 坐标绘制纹理子矩形。
      *
-     * <p>状态契约：本方法自带投影/模型视图压栈与 matrix mode 还原（<strong>矩阵栈内容</strong>是帧围栏与
-     * attrib 帧都恢复不了的状态，必须自守；matrix mode 两者都能恢复，这里只是尽早还原）。
+     * <p>状态契约：本方法自带投影/模型视图压栈与 matrix mode 还原（<strong>矩阵栈内容</strong>不受 attrib 帧
+     * 管辖，必须自守；帧围栏自 P6 起也按内容恢复这两条栈，但那是帧边界上的第二道，不能替代本方法在
+     * attrib 信封内的自守。matrix mode 两者都能恢复，这里只是尽早还原）。
      * 纹理绑定、blend、光照等 FFP 状态不在本方法职责内，由调用点所在事务回收——现网调用链
      * 全部位于 {@code UiMainLayerSnapshotService} 的 {@code glPushAttrib(GL_ALL_ATTRIB_BITS)} 信封内
      * （GL 自净审查 N18/N23）。</p>

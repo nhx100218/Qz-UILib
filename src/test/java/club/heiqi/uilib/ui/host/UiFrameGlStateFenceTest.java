@@ -2,7 +2,6 @@ package club.heiqi.uilib.ui.host;
 
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
@@ -92,9 +91,9 @@ public class UiFrameGlStateFenceTest {
     /**
      * 栈安全回归（P6，headless 实测）：矩阵保护必须按内容读回/写回，不得占用矩阵栈深度。
      *
-     * <p>PROJECTION 栈的规格下限只有 2 层，帧内 {@code beginMainUiFrame} 与字体围栏各自还要压一层；
-     * 围栏再压一层会把文本路径推爆——headless 文本页实测 {@code glGetError=1283}
-     * （GL_STACK_OVERFLOW）。故本用例钉"读两处内容 + 写回两处内容"，而不是钉压栈次数。</p>
+     * <p>规格下限（PROJECTION 2 层）不是实测值：本机驱动上限 4 层，帧内 {@code beginMainUiFrame} 与
+     * 字体批守卫各占一层，重构前围栏再占一层使峰值达到 4/4——headless 文本页实测 {@code glGetError=1283}
+     * （GL_STACK_OVERFLOW），重构后 3/4。故本用例钉"读两处内容 + 写回两处内容"，而不是钉压栈次数。</p>
      */
     @Test
     public void matrixProtectionCapturesContentInsteadOfPushingStackFrames() {

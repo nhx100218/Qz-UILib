@@ -587,15 +587,21 @@ public class GlyphPage {
      */
     public int getOrCreateTextureId() {
         drainEntryGlError("texture_init_entry");
-        gl.pushAttrib(UPLOAD_ATTRIB_MASK);
-        // 沿用本类既有契约（见 GlyphPageVariableSlotPackingTest#failedAttribPushDoesNotPopUnpushedHostStack）：
-        // 闸门失败即视为 push 未生效，不 pop，避免弹掉宿主的帧；代价是「push 成功却报错」时会漏一帧（R11 未决项）。
-        requireNoGlError("texture_init_attrib_push");
-        gl.pushClientAttrib(GL11.GL_CLIENT_PIXEL_STORE_BIT);
-        requireNoGlError("texture_init_client_attrib_push");
+        // 帧配平（P7 复核项）：两个 push 与各自的闸门分别记账——沿用本类既有契约
+        // （见 GlyphPageVariableSlotPackingTest#failedAttribPushDoesNotPopUnpushedHostStack）：闸门失败即视为
+        // push 未生效、不 pop；但<b>已确认压入</b>的帧必须在出口无条件弹出。原实现把 client 段的 push 与检查
+        // 放在 try 之外，client 段一失败，已确认的 attrib 帧就漏了（代价不再是 R11 的可疑窗口，而是确定泄漏）。
+        boolean attribPushed = false;
+        boolean clientAttribPushed = false;
         Throwable failure = null;
         int createdTextureId = 0;
         try {
+            gl.pushAttrib(UPLOAD_ATTRIB_MASK);
+            requireNoGlError("texture_init_attrib_push");
+            attribPushed = true;
+            gl.pushClientAttrib(GL11.GL_CLIENT_PIXEL_STORE_BIT);
+            requireNoGlError("texture_init_client_attrib_push");
+            clientAttribPushed = true;
             ensureTexture();
             createdTextureId = textureId;
         } catch (RuntimeException ensureFailure) {
@@ -603,22 +609,26 @@ public class GlyphPage {
         } catch (Error ensureFailure) {
             failure = ensureFailure;
         }
-        // 恢复顺序与压栈相反（client attrib 先弹）
-        try {
-            gl.popClientAttrib();
-            requireNoGlError("texture_init_client_attrib_pop");
-        } catch (RuntimeException restoreFailure) {
-            failure = appendFailure(failure, restoreFailure);
-        } catch (Error restoreFailure) {
-            failure = appendFailure(failure, restoreFailure);
+        // 恢复顺序与压栈相反（client attrib 先弹）；只弹已确认压入的帧。
+        if (clientAttribPushed) {
+            try {
+                gl.popClientAttrib();
+                requireNoGlError("texture_init_client_attrib_pop");
+            } catch (RuntimeException restoreFailure) {
+                failure = appendFailure(failure, restoreFailure);
+            } catch (Error restoreFailure) {
+                failure = appendFailure(failure, restoreFailure);
+            }
         }
-        try {
-            gl.popAttrib();
-            requireNoGlError("texture_init_attrib_pop");
-        } catch (RuntimeException restoreFailure) {
-            failure = appendFailure(failure, restoreFailure);
-        } catch (Error restoreFailure) {
-            failure = appendFailure(failure, restoreFailure);
+        if (attribPushed) {
+            try {
+                gl.popAttrib();
+                requireNoGlError("texture_init_attrib_pop");
+            } catch (RuntimeException restoreFailure) {
+                failure = appendFailure(failure, restoreFailure);
+            } catch (Error restoreFailure) {
+                failure = appendFailure(failure, restoreFailure);
+            }
         }
         if (failure != null) {
             throwUnchecked(failure);
