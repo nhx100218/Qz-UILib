@@ -4,6 +4,7 @@ import org.lwjgl.opengl.GL11;
 import org.lwjgl.opengl.GL14;
 
 import club.heiqi.uilib.ui.base.cascade.UiBorderRadiusResolver;
+import club.heiqi.uilib.util.GlStateDiagnostics;
 
 /** UiRenderContext 的圆角覆盖率与 GL 批量绘制助手。 */
 final class UiContextGlHelpers {
@@ -46,7 +47,7 @@ final class UiContextGlHelpers {
     /** 一层解析装饰只提交一个 GL 批次，保持祖先裁剪，恢复全部触碰的固定管线状态。 */
     static void drawRoundedBandBatch(UiRenderContext context, int left, int top, int right, int bottom,
             int[] outer, int[] inner, int[] bounds, int[] colors, float scale) {
-        GL11.glPushAttrib(GL11.GL_ALL_ATTRIB_BITS);
+        GlStateDiagnostics.pushAttrib(GL11.GL_ALL_ATTRIB_BITS, "UiContextGlHelpers#drawRoundedBandBatch");
         try {
             GL11.glEnable(GL11.GL_BLEND);
             GL14.glBlendEquation(GL14.GL_FUNC_ADD);
@@ -72,7 +73,7 @@ final class UiContextGlHelpers {
                 GL11.glEnd();
             }
         } finally {
-            GL11.glPopAttrib();
+            GlStateDiagnostics.popAttrib("UiContextGlHelpers#drawRoundedBandBatch");
         }
         if (context != null) context.notifyMainLayerContentChanged();
     }

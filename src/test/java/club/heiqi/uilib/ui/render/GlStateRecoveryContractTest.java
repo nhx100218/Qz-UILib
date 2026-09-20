@@ -9,6 +9,11 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.List;
+import java.util.stream.Stream;
 
 import org.junit.Test;
 
@@ -87,8 +92,9 @@ public class GlStateRecoveryContractTest {
         String source = source(BACKDROP);
         assertTrue("必须用标志位条件化恢复", source.contains("boolean clipPushed = false;")
                 && source.contains("boolean attribPushed = false;"));
-        assertFalse("pushClip / pushAttrib 不得留在 try 外",
-                source.contains("context.pushClip(left, top, right, bottom, 0);\n        GL11.glPushAttrib"));
+        assertFalse("pushClip / pushAttrib 不得留在 try 外（P8 起 push 经插桩工具，两种形态都要拦）",
+                source.contains("context.pushClip(left, top, right, bottom, 0);\n        GlStateDiagnostics.pushAttrib")
+                        || source.contains("context.pushClip(left, top, right, bottom, 0);\n        GL11.glPushAttrib"));
     }
 
     /** N16：初始化失败的复位必须与 close 解耦——close 自身在 GL 入口不可用时也会抛。 */
@@ -175,7 +181,9 @@ public class GlStateRecoveryContractTest {
         assertTrue("capture 必须把帧起点深度写进快照",
                 source.contains("snapshot.attribDepth = club.heiqi.uilib.util.GlAttribDepth.current();"));
         assertTrue("restore 必须按量弹出", source.contains("GlAttribDepth.popExcess(snapshot.attribDepth);"));
-        assertFalse("围栏不使用 attrib 属性组栈（不依赖其 core profile 可用性）", source.contains("glPushAttrib"));
+        // 两种形态都要拦：裸 GL11.glPushAttrib 与 P8 起的 GlStateDiagnostics.pushAttrib（属性组栈一律不用）。
+        assertFalse("围栏不使用 attrib 属性组栈（不依赖其 core profile 可用性）",
+                source.contains("glPushAttrib") || source.contains("pushAttrib("));
         assertFalse("围栏不得用 glGetError 清错误队列（历史 ERROR 记录）", source.contains("glGetError"));
         assertFalse("围栏不得做栈参数查询（会留 GL 错误码）", source.contains("GL_MAX_ATTRIB_STACK_DEPTH"));
         assertTrue("attrib 栈降级留痕由 GlAttribDepth 承担（warn-once）",
@@ -256,13 +264,57 @@ public class GlStateRecoveryContractTest {
     @Test
     public void compositeFinallyPopsAttribBeforeRebindingTexture() throws Exception {
         String source = source(RENDER_TARGET);
-        assertEquals("三处 finally 都要走累积口径", 3,
-                occurrences(source, "restoreStep(failure, () -> GL11.glPopAttrib());"));
+        assertEquals("三处 finally 都要走累积口径（P8 起 pop 经插桩工具，形态随之变化）", 3,
+                occurrences(source, "restoreStep(failure, () -> GlStateDiagnostics.popAttrib(\"UiRenderTarget\"));"));
         assertFalse("不得再出现裸的「先回绑再 pop」序列",
                 source.contains("GL11.glBindTexture(GL11.GL_TEXTURE_2D, previousTextureBinding);\n"
                         + "            GL11.glPopAttrib();"));
         assertEquals("三处都要在末尾统一重抛（含 restoreAfterBegin 的既有出口）", 4,
                 occurrences(source, "rethrowCloseFailure(failure[0]);"));
+    }
+
+    /**
+     * P8：attrib 帧站点必须全部经 {@code GlStateDiagnostics} 插桩（N13/R11 的排错入口）。
+     *
+     * <p>判据：裸的 {@code GL11.glPushAttrib(...)} 一族只允许出现在插桩工具自身，以及
+     * {@code GlAttribDepth.popExcess}（它有自己的 warn-once 留痕，且只做"弹第三方多余层"）。
+     * 新增站点若直接调裸 API，Core Profile 真机上就只剩一次没有上下文信息的异常。</p>
+     */
+    @Test
+    public void attribFrameSitesAreInstrumentedForDiagnostics() throws Exception {
+        List<String> rawCallFiles = new ArrayList<String>();
+        try (Stream<Path> files = Files.walk(Paths.get("src/main/java"))) {
+            for (Path file : (Iterable<Path>) files.filter(path -> path.toString().endsWith(".java"))::iterator) {
+                String source = source(file);
+                if (source.contains("GL11.glPushAttrib(") || source.contains("GL11.glPopAttrib(")
+                        || source.contains("GL11.glPushClientAttrib(")
+                        || source.contains("GL11.glPopClientAttrib(")) {
+                    rawCallFiles.add(file.toString().replace('\\', '/'));
+                }
+            }
+        }
+        Collections.sort(rawCallFiles);
+        assertEquals("裸 attrib 调用只允许在插桩工具与 GlAttribDepth 的自有清理路径里，其余站点必须走"
+                        + " GlStateDiagnostics（否则 N13/R11 在真机上没有可排查的日志锚点）",
+                Arrays.asList("src/main/java/club/heiqi/uilib/util/GlAttribDepth.java",
+                        "src/main/java/club/heiqi/uilib/util/GlStateDiagnostics.java"),
+                rawCallFiles);
+    }
+
+    /**
+     * P8/R11：字符页的 GL 错误闸门必须真的把现场交给插桩（含 entry 对照数据）。
+     *
+     * <p>行为用例只能证明工具方法本身可用；这条结构断言钉住"闸门确实调了它、且传了进入时的排空数据"，
+     * 否则插桩在真机上等于没接（删掉调用不会有任何测试变红）。</p>
+     */
+    @Test
+    public void glyphGateFailureIsHandedToDiagnosticsWithEntryComparison() throws Exception {
+        String source = source(Paths.get("src/main/java/club/heiqi/uilib/font/page/GlyphPage.java"));
+        assertTrue("闸门失败必须调插桩（R11 现场）",
+                source.contains("GlStateDiagnostics.warnGlyphGateFailure(phase, glError, "
+                        + "lastEntryGlError, lastEntryGlErrorDrained);"));
+        assertTrue("进入时的排空数据必须被记账（否则无法区分第三方遗留与本次 push）",
+                source.contains("lastEntryGlError = firstError;"));
     }
 
     /** 读取 UTF-8 生产源码。 */

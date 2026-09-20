@@ -11,6 +11,7 @@ import org.lwjgl.opengl.GL13;
 import club.heiqi.uilib.font.FontRuntimeDiagnostics;
 import club.heiqi.uilib.font.FontRuntimeSettings;
 import club.heiqi.uilib.font.glyph.GlyphRequestToken;
+import club.heiqi.uilib.util.GlStateDiagnostics;
 
 /**
  * 字符页。
@@ -21,6 +22,11 @@ public class GlyphPage {
 
     /** entry 相位遗留错误的排空上限：GL 错误队列没有标准深度，防呆避免驱动持续报错时死循环。 */
     private static final int MAX_ENTRY_GL_ERROR_DRAIN = 32;
+
+    /** 最近一次 entry 相位排空到的首个错误码（0 = 进入时干净）；供 R11 闸门日志对照来源。 */
+    private int lastEntryGlError;
+    /** 最近一次 entry 相位排空的错误个数。 */
+    private int lastEntryGlErrorDrained;
 
     /** entry 相位遗留错误的告警门：每次上传都会经过该相位，只在首次留痕。 */
     private static final java.util.concurrent.atomic.AtomicBoolean ENTRY_GL_ERROR_WARNED =
@@ -1067,8 +1073,12 @@ public class GlyphPage {
                 break;
             }
         }
+        // 每次都记账（供同事务的闸门失败日志做 R11 来源对照）；告警本身仍只发首次，避免刷屏。
+        lastEntryGlError = firstError;
+        lastEntryGlErrorDrained = drained;
         if (firstError != GL11.GL_NO_ERROR && ENTRY_GL_ERROR_WARNED.compareAndSet(false, true)) {
-            LOG.warn("字符页上传入口存在遗留 GL 错误，已排空并继续上传：phase={} first=0x{} drained={}",
+            LOG.warn("字符页上传入口存在遗留 GL 错误，已排空并继续上传：phase={} first=0x{} drained={}"
+                            + "（后续同类入口污染不再逐次告警，但每个事务都会把对照数据写进闸门日志）",
                     phase, Integer.toHexString(firstError), Integer.valueOf(drained));
         }
     }
@@ -1077,6 +1087,10 @@ public class GlyphPage {
     private void requireNoGlError(String phase) {
         int glError = gl.getError();
         if (glError != GL11.GL_NO_ERROR) {
+            // R11 插桩：phase 以 _attrib_push/_client_attrib_push 结尾且错误码非零时，就是「push 调用成功、
+            // 队列里却仍有错误」的现场。错误码 + phase 进日志（warn-once per phase），真机可据此定点是
+            // 进入前的第三方污染还是 push 自身；不改任何控制流，仍按原语义抛出。
+            GlStateDiagnostics.warnGlyphGateFailure(phase, glError, lastEntryGlError, lastEntryGlErrorDrained);
             throw new GlyphUploadException(phase, glError, "OpenGL error during glyph upload");
         }
     }

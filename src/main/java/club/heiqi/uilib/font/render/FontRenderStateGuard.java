@@ -380,22 +380,22 @@ public class FontRenderStateGuard implements FontRenderStateExecutor {
 
         @Override
         public void pushAttrib(int mask) {
-            GL11.glPushAttrib(mask);
+            club.heiqi.uilib.util.GlStateDiagnostics.pushAttrib(mask, "FontRenderStateGuard");
         }
 
         @Override
         public void pushClientAttrib(int mask) {
-            GL11.glPushClientAttrib(mask);
+            club.heiqi.uilib.util.GlStateDiagnostics.pushClientAttrib(mask, "FontRenderStateGuard");
         }
 
         @Override
         public void popAttrib() {
-            GL11.glPopAttrib();
+            club.heiqi.uilib.util.GlStateDiagnostics.popAttrib("FontRenderStateGuard");
         }
 
         @Override
         public void popClientAttrib() {
-            GL11.glPopClientAttrib();
+            club.heiqi.uilib.util.GlStateDiagnostics.popClientAttrib("FontRenderStateGuard");
         }
 
         @Override

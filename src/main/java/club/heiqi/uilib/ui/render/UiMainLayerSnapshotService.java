@@ -13,6 +13,7 @@ import org.lwjgl.opengl.GL30;
 
 import club.heiqi.uilib.ui.diagnostic.UiPerfMarkers;
 import club.heiqi.uilib.ui.diagnostic.UiPerformanceMonitor;
+import club.heiqi.uilib.util.GlStateDiagnostics;
 
 /**
  * 当前 UI 主层的同帧快照服务。
@@ -503,7 +504,7 @@ public final class UiMainLayerSnapshotService {
             programCaptured = true;
             GL11.glGetInteger(GL11.GL_VIEWPORT, previousViewport);
             viewportCaptured = true;
-            GL11.glPushAttrib(GL11.GL_ALL_ATTRIB_BITS);
+            GlStateDiagnostics.pushAttrib(GL11.GL_ALL_ATTRIB_BITS, "UiMainLayerSnapshotService#capture");
             attribCaptured = true;
             if (snapshot.sourceTextureId == 0) {
                 snapshot.sourceTextureId = GL11.glGenTextures();
@@ -595,7 +596,7 @@ public final class UiMainLayerSnapshotService {
                 restoreFailure = restoreStep(restoreFailure, new Runnable() {
                     @Override
                     public void run() {
-                        GL11.glPopAttrib();
+                        GlStateDiagnostics.popAttrib("UiMainLayerSnapshotService#capture");
                     }
                 });
             }

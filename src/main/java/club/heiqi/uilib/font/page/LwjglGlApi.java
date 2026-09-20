@@ -6,6 +6,8 @@ import org.lwjgl.opengl.GL11;
 import org.lwjgl.opengl.GL13;
 import org.lwjgl.opengl.GL30;
 
+import club.heiqi.uilib.util.GlStateDiagnostics;
+
 /**
  * LWJGL 实现的 {@link GlApi}（渲染主线程专用，包内单例）。
  */
@@ -15,24 +17,25 @@ final class LwjglGlApi implements GlApi {
 
     private LwjglGlApi() {}
 
+    // N13 插桩：字符页的 attrib 帧全部经这里，失败点与 mask 直接进日志（不改控制流）。
     @Override
     public void pushAttrib(int mask) {
-        GL11.glPushAttrib(mask);
+        GlStateDiagnostics.pushAttrib(mask, "GlyphPage");
     }
 
     @Override
     public void pushClientAttrib(int mask) {
-        GL11.glPushClientAttrib(mask);
+        GlStateDiagnostics.pushClientAttrib(mask, "GlyphPage");
     }
 
     @Override
     public void popClientAttrib() {
-        GL11.glPopClientAttrib();
+        GlStateDiagnostics.popClientAttrib("GlyphPage");
     }
 
     @Override
     public void popAttrib() {
-        GL11.glPopAttrib();
+        GlStateDiagnostics.popAttrib("GlyphPage");
     }
 
     @Override

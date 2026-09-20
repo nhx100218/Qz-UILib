@@ -85,8 +85,9 @@ public class UiAntialiasContractTest {
     @Test
     public void roundedCoverageBatchPreservesCallerStateAndDoesNotAlphaTestTheEdge() throws IOException {
         String helper = read("src/main/java/club/heiqi/uilib/ui/render/UiContextGlHelpers.java");
-        assertTrue(helper.contains("glPushAttrib(GL11.GL_ALL_ATTRIB_BITS)"));
-        assertTrue(helper.contains("glPopAttrib()"));
+        // P8 起 attrib 帧经 GlStateDiagnostics 插桩调用。
+        assertTrue(helper.contains("GlStateDiagnostics.pushAttrib(GL11.GL_ALL_ATTRIB_BITS,"));
+        assertTrue(helper.contains("GlStateDiagnostics.popAttrib("));
         assertTrue(helper.contains("glDisable(GL11.GL_ALPHA_TEST)"));
         assertTrue(helper.contains("glBlendEquation(GL14.GL_FUNC_ADD)"));
         assertFalse("抗锯齿不能依赖驱动全局polygon smooth", helper.contains("GL_POLYGON_SMOOTH"));

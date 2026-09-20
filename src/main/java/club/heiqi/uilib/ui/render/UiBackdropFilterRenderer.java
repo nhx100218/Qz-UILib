@@ -10,6 +10,7 @@ import org.lwjgl.opengl.GL20;
 import club.heiqi.uilib.ui.base.cascade.UiBorderRadiusResolver;
 import club.heiqi.uilib.ui.diagnostic.UiPerfMarkers;
 import club.heiqi.uilib.ui.diagnostic.UiPerformanceMonitor;
+import club.heiqi.uilib.util.GlStateDiagnostics;
 import club.heiqi.uilib.util.UiNumbers;
 
 /**
@@ -205,7 +206,7 @@ final class UiBackdropFilterRenderer {
         try {
             context.pushClip(left, top, right, bottom, 0);
             clipPushed = true;
-            GL11.glPushAttrib(GL11.GL_ALL_ATTRIB_BITS);
+            GlStateDiagnostics.pushAttrib(GL11.GL_ALL_ATTRIB_BITS, "UiBackdropFilterRenderer");
             attribPushed = true;
             previousProgram = GL11.glGetInteger(GL20.GL_CURRENT_PROGRAM);
             previousActiveTexture = GL11.glGetInteger(GL13.GL_ACTIVE_TEXTURE);
@@ -314,7 +315,7 @@ final class UiBackdropFilterRenderer {
                 restoreFailure = restoreStep(restoreFailure, new Runnable() {
                     @Override
                     public void run() {
-                        GL11.glPopAttrib();
+                        GlStateDiagnostics.popAttrib("UiBackdropFilterRenderer");
                     }
                 });
             }

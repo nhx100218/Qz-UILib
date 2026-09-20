@@ -42,9 +42,10 @@ public class SnapshotFilterPassEnergyTest {
         Assert.assertTrue(pass.contains("GL11.glColor4f(weight, weight, weight, weight)"));
         // 生产调用位于 captureSnapshot 的 attrib 保护内，设置权重状态不能污染宿主。
         String capture = source("UiMainLayerSnapshotService");
-        assertBefore(capture, "GL11.glPushAttrib(GL11.GL_ALL_ATTRIB_BITS)",
+        // P8 起 attrib 帧经 GlStateDiagnostics 插桩调用；只钉"保护帧的存在与位置"，不钉调用拼写细节。
+        assertBefore(capture, "GlStateDiagnostics.pushAttrib(GL11.GL_ALL_ATTRIB_BITS,",
                 capture.indexOf("SnapshotFilterPassRenderer.downsampleSnapshot("));
-        Assert.assertTrue(capture.contains("GL11.glPopAttrib()"));
+        Assert.assertTrue(capture.contains("GlStateDiagnostics.popAttrib("));
     }
 
     private static void assertBefore(String source, String statement, int boundary) {

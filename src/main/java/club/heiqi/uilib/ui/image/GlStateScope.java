@@ -366,22 +366,22 @@ public final class GlStateScope {
 
         @Override
         public void pushAttrib(int mask) {
-            GL11.glPushAttrib(mask);
+            club.heiqi.uilib.util.GlStateDiagnostics.pushAttrib(mask, "GlStateScope");
         }
 
         @Override
         public void popAttrib() {
-            GL11.glPopAttrib();
+            club.heiqi.uilib.util.GlStateDiagnostics.popAttrib("GlStateScope");
         }
 
         @Override
         public void pushClientAttrib(int mask) {
-            GL11.glPushClientAttrib(mask);
+            club.heiqi.uilib.util.GlStateDiagnostics.pushClientAttrib(mask, "GlStateScope");
         }
 
         @Override
         public void popClientAttrib() {
-            GL11.glPopClientAttrib();
+            club.heiqi.uilib.util.GlStateDiagnostics.popClientAttrib("GlStateScope");
         }
 
         @Override

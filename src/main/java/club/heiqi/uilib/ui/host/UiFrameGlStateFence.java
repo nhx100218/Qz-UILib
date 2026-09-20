@@ -138,9 +138,14 @@ public final class UiFrameGlStateFence {
         }
     }
 
-    /** 捕获真实入口状态；矩阵按内容读回，不压栈。 */
+    /** 捕获真实入口状态；矩阵按内容读回不压栈，并打一次环境指纹（N13/R11 排错入口）。 */
     private void capture() {
         gl.beginCapture();
+        // N13/R11 插桩：每进程只打一次 GL 环境指纹（版本/renderer/能力档位/attrib 深度可读性）。
+        // 真机报状态污染时，第一眼就能确认是不是 Angelica/Core Profile 那一档。
+        club.heiqi.uilib.util.GlStateDiagnostics.logEnvironmentOnce("UiFrameGlStateFence");
+        // 帧序号：让插桩日志里的 frame=N 能与本帧关联（N13/R11 排查用）。
+        club.heiqi.uilib.util.GlStateDiagnostics.beginFrame();
         // 帧起点深度：帧末按量弹回，避免第三方（如 FFP 变体编译）在帧内多压的 attrib 帧跨帧累积。
         // 两个宿主入口（HUD / 屏幕）因此同享同一套兜底；屏幕入口另有一层帧级兜底作双保险（R19）。
         snapshot.attribDepth = club.heiqi.uilib.util.GlAttribDepth.current();

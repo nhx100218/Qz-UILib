@@ -10,6 +10,7 @@ import org.lwjgl.opengl.GL12;
 import org.lwjgl.opengl.GL14;
 import org.lwjgl.opengl.GL30;
 
+import club.heiqi.uilib.util.GlStateDiagnostics;
 import club.heiqi.uilib.util.UiNumbers;
 
 /**
@@ -61,7 +62,7 @@ public class UiRenderTarget {
         previousDrawFramebufferId = GL11.glGetInteger(GL30.GL_DRAW_FRAMEBUFFER_BINDING);
         previousReadFramebufferId = GL11.glGetInteger(GL30.GL_READ_FRAMEBUFFER_BINDING);
         try {
-            GL11.glPushAttrib(GL11.GL_ALL_ATTRIB_BITS);
+            GlStateDiagnostics.pushAttrib(GL11.GL_ALL_ATTRIB_BITS, "UiRenderTarget");
             attribStatePushed = true;
             GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, framebufferId);
             GL11.glViewport(0, 0, width, height);
@@ -101,7 +102,7 @@ public class UiRenderTarget {
                 previousViewport.get(2), previousViewport.get(3)));
         if (attribStatePushed) {
             restoreStep(failure, () -> {
-                GL11.glPopAttrib();
+                GlStateDiagnostics.popAttrib("UiRenderTarget");
                 attribStatePushed = false;
             });
         }
@@ -131,7 +132,7 @@ public class UiRenderTarget {
     public void drawToScreen(int guiWidth, int guiHeight) {
         // 读回真实原值：不依赖 attrib 栈回滚纹理绑定（attrib 栈在 Core Profile 下可能不可用，见 GL 自净审查 N2）。
         int previousTextureBinding = GL11.glGetInteger(GL11.GL_TEXTURE_BINDING_2D);
-        GL11.glPushAttrib(GL11.GL_ALL_ATTRIB_BITS);
+        GlStateDiagnostics.pushAttrib(GL11.GL_ALL_ATTRIB_BITS, "UiRenderTarget");
         try {
             GL11.glEnable(GL11.GL_TEXTURE_2D);
             GL11.glEnable(GL11.GL_BLEND);
@@ -159,7 +160,7 @@ public class UiRenderTarget {
             Throwable[] failure = new Throwable[1];
             // 栈平衡优先（N9 口径）：popAttrib 必须先于后续回绑——原「先回绑再 pop」在回绑抛异常时会让
             // attrib 帧永不弹出（P7 复核项）。回绑是冗余兜底：attrib 帧本身已实测恢复 per-unit 绑定。
-            restoreStep(failure, () -> GL11.glPopAttrib());
+            restoreStep(failure, () -> GlStateDiagnostics.popAttrib("UiRenderTarget"));
             restoreStep(failure, () -> GL11.glBindTexture(GL11.GL_TEXTURE_2D, previousTextureBinding));
             rethrowCloseFailure(failure[0]);
         }
@@ -175,7 +176,7 @@ public class UiRenderTarget {
     public void compositeToCurrentFramebuffer() {
         // 读回真实原值：不依赖 attrib 栈回滚纹理绑定（attrib 栈在 Core Profile 下可能不可用，见 GL 自净审查 N2）。
         int previousTextureBinding = GL11.glGetInteger(GL11.GL_TEXTURE_BINDING_2D);
-        GL11.glPushAttrib(GL11.GL_ALL_ATTRIB_BITS);
+        GlStateDiagnostics.pushAttrib(GL11.GL_ALL_ATTRIB_BITS, "UiRenderTarget");
         try {
             GL11.glEnable(GL11.GL_TEXTURE_2D);
             GL11.glEnable(GL11.GL_BLEND);
@@ -202,7 +203,7 @@ public class UiRenderTarget {
             Throwable[] failure = new Throwable[1];
             // 栈平衡优先（N9 口径）：popAttrib 必须先于后续回绑——原「先回绑再 pop」在回绑抛异常时会让
             // attrib 帧永不弹出（P7 复核项）。回绑是冗余兜底：attrib 帧本身已实测恢复 per-unit 绑定。
-            restoreStep(failure, () -> GL11.glPopAttrib());
+            restoreStep(failure, () -> GlStateDiagnostics.popAttrib("UiRenderTarget"));
             restoreStep(failure, () -> GL11.glBindTexture(GL11.GL_TEXTURE_2D, previousTextureBinding));
             rethrowCloseFailure(failure[0]);
         }
@@ -232,7 +233,7 @@ public class UiRenderTarget {
 
         // 读回真实原值：不依赖 attrib 栈回滚纹理绑定（attrib 栈在 Core Profile 下可能不可用，见 GL 自净审查 N2）。
         int previousTextureBinding = GL11.glGetInteger(GL11.GL_TEXTURE_BINDING_2D);
-        GL11.glPushAttrib(GL11.GL_ALL_ATTRIB_BITS);
+        GlStateDiagnostics.pushAttrib(GL11.GL_ALL_ATTRIB_BITS, "UiRenderTarget");
         try {
             GL11.glEnable(GL11.GL_TEXTURE_2D);
             GL11.glEnable(GL11.GL_BLEND);
@@ -263,7 +264,7 @@ public class UiRenderTarget {
         } finally {
             Throwable[] failure = new Throwable[1];
             // 同上一处：pop 最先，颜色归一随后；任一步失败只累积，不跳过后续。
-            restoreStep(failure, () -> GL11.glPopAttrib());
+            restoreStep(failure, () -> GlStateDiagnostics.popAttrib("UiRenderTarget"));
             restoreStep(failure, () -> GL11.glBindTexture(GL11.GL_TEXTURE_2D, previousTextureBinding));
             restoreStep(failure, () -> GL11.glColor4f(1.0F, 1.0F, 1.0F, 1.0F));
             rethrowCloseFailure(failure[0]);

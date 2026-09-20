@@ -80,8 +80,9 @@ public class UiHudRenderListenerGlFenceTest {
         assertTrue("恢复路径必须存在", source.contains("private void restore()"));
         assertTrue("GL11 用量骤降说明捕获/恢复被拆（实测 62 处，地板 30）", occurrences(source, "GL11.") >= 30);
 
-        assertFalse(source.contains("glPushAttrib"));
-        assertFalse(source.contains("glPushClientAttrib"));
+        // 两种形态都拦（裸 GL11.* 与 P8 起的 GlStateDiagnostics.*）。
+        assertFalse(source.contains("glPushAttrib") || source.contains("pushAttrib("));
+        assertFalse(source.contains("glPushClientAttrib") || source.contains("pushClientAttrib("));
         assertFalse(source.contains("glClientActiveTexture"));
         assertFalse(source.contains("GL_TEXTURE_MATRIX"));
         assertFalse(source.contains("GL_TEXTURE_STACK_DEPTH"));
