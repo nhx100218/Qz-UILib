@@ -2,6 +2,7 @@ package club.heiqi.config;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -23,7 +24,7 @@ public class DefaultMutableConfig implements MutableConfig {
 
     private Map<String, Object> data;
     private boolean dirty;
-    /** 原始带注释的 ConfigNode 树，用于未修改时保留注释 round-trip */
+    /** 加载期原始带注释 ConfigNode 树：未修改时直接 round-trip，已修改时作为注释归位来源（只读） */
     private ConfigNode originalNode;
     /** 是否仍处于未修改的原始状态：true 时 asImmutable/save 直接用 originalNode，保留注释 */
     private boolean pristine;
@@ -79,8 +80,8 @@ public class DefaultMutableConfig implements MutableConfig {
             Object next = current.get(part);
 
             if (!(next instanceof Map)) {
-                // 创建中间节点
-                Map<String, Object> newMap = new HashMap<String, Object>();
+                // 创建中间节点（LinkedHashMap：与加载顺序一致，重建写回时不重排既有键）
+                Map<String, Object> newMap = new LinkedHashMap<String, Object>();
                 current.put(part, newMap);
                 current = newMap;
             } else {
@@ -127,9 +128,15 @@ public class DefaultMutableConfig implements MutableConfig {
 
         // 移除值
         String key = parts[parts.length - 1];
+        // ★ 不能用「返回值是否非 null」判断是否真的发生了删除：显式 null 键（YAML/JSON 的 `key: null`）
+        // 在 data 中存的就是 Java null，删除成功与删除不存在同样返回 null。漏判会让 pristine 仍为 true，
+        // 之后 asImmutable/save 回退到带旧键的 originalNode（读到的还是「键存在」），dirty 与
+        // REMOVE 事件也一并漏报。存在性只由 containsKey 判定，数据层与不可变快照才同步。
+        // 删除不存在的键保持无副作用（不置 dirty、不发事件）。
+        boolean existed = current.containsKey(key);
         Object oldValue = current.remove(key);
 
-        if (oldValue != null) {
+        if (existed) {
             dirty = true;
             pristine = false;
             notifyListeners(new ConfigChangeEvent(path, oldValue, null, 
@@ -169,8 +176,10 @@ public class DefaultMutableConfig implements MutableConfig {
 
         // 转换为不可变节点并写入
         // 未修改（pristine）时直接用原始带注释的 ConfigNode，保留注释 round-trip；
-        // 已修改时用 data 重建（注释丢失，已知遗留 TODO）
-        ConfigNode node = pristine && originalNode != null ? originalNode : convertToImmutableNode(data);
+        // 已修改时从 data 重建，但按路径把原始树上的注释元数据归位到新树（见
+        // convertToImmutableNode(Object, ConfigNode)），未变路径的注释同样保留。
+        ConfigNode node = pristine && originalNode != null ? originalNode
+                : convertToImmutableNode(data, originalNode);
         writer.write(node, target);
 
         dirty = false;
@@ -231,11 +240,12 @@ public class DefaultMutableConfig implements MutableConfig {
 
     @Override
     public ConfigNode asImmutable() {
-        // 未修改时返回原始带注释的 ConfigNode，保留注释；已修改时用 data 重建
+        // 未修改时返回原始带注释的 ConfigNode，保留注释；已修改时从 data 重建，
+        // 并按路径归位原始树上的注释（未变路径的注释不因无关修改而丢失）。
         if (pristine && originalNode != null) {
             return originalNode;
         }
-        return convertToImmutableNode(data);
+        return convertToImmutableNode(data, originalNode);
     }
 
     // ConfigNode 接口实现
@@ -282,9 +292,12 @@ public class DefaultMutableConfig implements MutableConfig {
 
     @Override
     public Map<String, ConfigNode> asMap() {
-        Map<String, ConfigNode> result = new HashMap<String, ConfigNode>();
+        Map<String, ConfigNode> result = new LinkedHashMap<String, ConfigNode>();
+        Map<String, ConfigNode> originals = originalNode != null && originalNode.getType() == NodeType.MAP
+                ? originalNode.asMap() : null;
         for (Map.Entry<String, Object> entry : data.entrySet()) {
-            result.put(entry.getKey(), convertToImmutableNode(entry.getValue()));
+            result.put(entry.getKey(), convertToImmutableNode(entry.getValue(),
+                    originals != null ? originals.get(entry.getKey()) : null));
         }
         return result;
     }
@@ -367,7 +380,7 @@ public class DefaultMutableConfig implements MutableConfig {
             return new HashMap<String, Object>();
         }
 
-        Map<String, Object> result = new HashMap<String, Object>();
+        Map<String, Object> result = new LinkedHashMap<String, Object>();
         for (Map.Entry<String, ConfigNode> entry : sourceMap.entrySet()) {
             result.put(entry.getKey(), convertToMutableValue(entry.getValue()));
         }
@@ -439,47 +452,114 @@ public class DefaultMutableConfig implements MutableConfig {
      * @return 配置节点
      */
     private ConfigNode convertToImmutableNode(Object value) {
+        return convertToImmutableNode(value, null);
+    }
+
+    /**
+     * 把可变值重建为不可变节点，并按<b>路径</b>从原始树上归位注释元数据。
+     *
+     * <p><b>注释归属口径（C2）</b>：注释属于「位置」而不是「节点实例」——Map 的键、List 的下标。
+     * 只改某个值再保存时，未变路径上的块注释 / 内联注释 / collection 末尾注释原样保留；被删除的键
+     * 其注释自然消失（位置不存在了）；新出现的键没有注释；List 元素按下标对齐（元素增删会让其后
+     * 元素的注释随位置平移，这正是「注释属于第 i 个位置」的直读语义）。</p>
+     *
+     * <p><b>为什么按路径复制而不是复用未变子树</b>：{@code data} 是修改之后的唯一事实源，
+     * 直接挂原始 subtree 会让「已修改树」与 {@code originalNode} 共享可变节点（副本语义破裂）。
+     * 本方法只在既有 ConfigNode 模型内搬运注释元数据，不引入并存的「注释数据库」，
+     * 因而不存在两份注释互相失配的失效问题；{@code originalNode} 仍是加载期快照，
+     * 整个生命周期只读。</p>
+     *
+     * @param value    可变值
+     * @param original 同路径的原始节点（可为 null：新键/新下标，无注释可归位）
+     * @return 配置节点
+     */
+    private ConfigNode convertToImmutableNode(Object value, ConfigNode original) {
+        if (value instanceof ConfigNode) {
+            // 防御分支：调用方自带的节点原样返回，绝不往外部对象上写注释
+            return (ConfigNode) value;
+        }
+
         if (value == null) {
-            return NullConfigNode.INSTANCE;
+            // 显式 null 值要承载注释时必须用独立实例：NullConfigNode.INSTANCE 是共享单例
+            return copyComments(hasComment(original) ? NullConfigNode.create() : NullConfigNode.INSTANCE, original);
         }
 
         if (value instanceof String) {
-            return new StringConfigNode((String) value);
+            return copyComments(new StringConfigNode((String) value), original);
         }
 
         if (value instanceof Number) {
-            return new NumberConfigNode((Number) value);
+            return copyComments(new NumberConfigNode((Number) value), original);
         }
 
         if (value instanceof Boolean) {
-            return new BooleanConfigNode((Boolean) value);
+            return copyComments(new BooleanConfigNode((Boolean) value), original);
         }
 
         if (value instanceof List) {
             List<?> list = (List<?>) value;
-            List<ConfigNode> nodes = new ArrayList<ConfigNode>();
-            for (Object item : list) {
-                nodes.add(convertToImmutableNode(item));
+            List<ConfigNode> originals = original != null && original.getType() == NodeType.LIST
+                    ? original.asList() : null;
+            List<ConfigNode> nodes = new ArrayList<ConfigNode>(list.size());
+            for (int i = 0; i < list.size(); i++) {
+                ConfigNode childOriginal = originals != null && i < originals.size() ? originals.get(i) : null;
+                nodes.add(convertToImmutableNode(list.get(i), childOriginal));
             }
-            return new ListConfigNode(nodes);
+            return copyComments(new ListConfigNode(nodes), original);
         }
 
         if (value instanceof Map) {
             Map<?, ?> map = (Map<?, ?>) value;
-            Map<String, ConfigNode> nodes = new HashMap<String, ConfigNode>();
+            Map<String, ConfigNode> originals = original != null && original.getType() == NodeType.MAP
+                    ? original.asMap() : null;
+            // 保持加载顺序：LinkedHashMap 让「改一个值再保存」不重排未变路径，
+            // 注释（随路径归位）因此仍贴在原位，而不是散落在 HashMap 的迭代顺序里。
+            Map<String, ConfigNode> nodes = new LinkedHashMap<String, ConfigNode>();
             for (Map.Entry<?, ?> entry : map.entrySet()) {
                 String key = String.valueOf(entry.getKey());
-                nodes.put(key, convertToImmutableNode(entry.getValue()));
+                nodes.put(key, convertToImmutableNode(entry.getValue(),
+                        originals != null ? originals.get(key) : null));
             }
-            return new MapConfigNode(nodes);
-        }
-
-        if (value instanceof ConfigNode) {
-            return (ConfigNode) value;
+            return copyComments(new MapConfigNode(nodes), original);
         }
 
         // 默认转为字符串
-        return new StringConfigNode(String.valueOf(value));
+        return copyComments(new StringConfigNode(String.valueOf(value)), original);
+    }
+
+    /**
+     * 把原始节点上的注释元数据复制到重建出的节点。
+     *
+     * <p>末尾注释（end comment）只属于 collection，标量节点不承接——否则 Writer 会往标量行挂
+     * 一条本不属于它的尾部注释。</p>
+     *
+     * @param target   重建出的节点
+     * @param original 同路径的原始节点，可为 null
+     * @return target（便于链式返回）
+     */
+    private static ConfigNode copyComments(ConfigNode target, ConfigNode original) {
+        if (original == null || !(target instanceof AbstractConfigNode)) {
+            return target;
+        }
+        AbstractConfigNode abs = (AbstractConfigNode) target;
+        if (original.getBlockComment() != null) {
+            abs.setBlockComment(original.getBlockComment());
+        }
+        if (original.getInlineComment() != null) {
+            abs.setInlineComment(original.getInlineComment());
+        }
+        if ((target.getType() == NodeType.MAP || target.getType() == NodeType.LIST)
+                && original.getEndComment() != null) {
+            abs.setEndComment(original.getEndComment());
+        }
+        return target;
+    }
+
+    /** 原始节点是否携带任何注释元数据（决定显式 null 值是否需要独立空节点实例） */
+    private static boolean hasComment(ConfigNode original) {
+        return original != null && (original.getBlockComment() != null
+                || original.getInlineComment() != null
+                || original.getEndComment() != null);
     }
 
     /**

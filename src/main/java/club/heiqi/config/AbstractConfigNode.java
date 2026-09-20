@@ -260,6 +260,16 @@ class NullConfigNode extends AbstractConfigNode {
 
     private NullConfigNode() {}
 
+    /**
+     * 创建独立的空节点实例。
+     *
+     * <p>用于「可变树重建」这类需要给显式 null 值保留注释的场景：注释是节点上的可变元数据，
+     * 而 {@link #INSTANCE} 是全局共享单例，往上写注释会污染所有空节点路径。</p>
+     */
+    static NullConfigNode create() {
+        return new NullConfigNode();
+    }
+
     @Override
     public NodeType getType() {
         return NodeType.NULL;

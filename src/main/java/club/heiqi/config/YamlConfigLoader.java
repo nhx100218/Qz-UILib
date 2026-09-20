@@ -120,8 +120,9 @@ class YamlConfigLoader implements ConfigLoader {
         } else if (node instanceof ScalarNode) {
             result = scalarToConfigNode((ScalarNode) node);
         } else {
-            // 未知节点类型退化为 null
-            result = NullConfigNode.INSTANCE;
+            // 未知节点类型退化为 null（独立实例：下方 attachComments 会写注释，
+            // 不能落到共享的 NullConfigNode.INSTANCE 上——那会让本条注释泄漏到其它空节点）
+            result = NullConfigNode.create();
         }
 
         // 挂载注释元数据
@@ -265,7 +266,8 @@ class YamlConfigLoader implements ConfigLoader {
         String value = scalar.getValue();
 
         if (Tag.NULL.equals(tag)) {
-            return NullConfigNode.INSTANCE;
+            // 独立实例，理由同上：显式 null / 空值行可能带块注释或内联注释
+            return NullConfigNode.create();
         }
         if (Tag.STR.equals(tag)) {
             return new StringConfigNode(value);

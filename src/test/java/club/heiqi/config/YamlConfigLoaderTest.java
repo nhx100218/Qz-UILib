@@ -126,6 +126,24 @@ public class YamlConfigLoaderTest {
         assertTrue(node.get("null2").isNull());
     }
 
+    /**
+     * 回归：带注释的 null 值不得把注释写到共享的 {@code NullConfigNode.INSTANCE} 上。
+     *
+     * <p>空值节点的注释只有挂在独立实例上才属于「本文档这个位置」；一旦落到共享单例，
+     * 同一进程内之后加载的无注释配置会凭空长出前一份文档的注释（注释归属被跨文档串味）。</p>
+     */
+    @Test
+    public void commentedNullNodesDoNotLeakAcrossDocuments() throws ConfigException {
+        ConfigNode first = Config.parse("# 仅此文档的说明\noptional: null # 空值内联\n", ConfigFormat.YAML);
+        assertNotNull("本文档的 null 值应带块注释", first.get("optional").getBlockComment());
+        assertNotNull("本文档的 null 值应带内联注释", first.get("optional").getInlineComment());
+
+        ConfigNode second = Config.parse("other: null\nplain: 1\n", ConfigFormat.YAML);
+        assertNull("另一文档的 null 值不得继承前文块注释", second.get("other").getBlockComment());
+        assertNull("另一文档的 null 值不得继承前文内联注释", second.get("other").getInlineComment());
+        assertNull("普通标量节点同样不受影响", second.get("plain").getBlockComment());
+    }
+
     @Test
     public void testYamlInlineList() throws ConfigException {
         String yaml = "name: test\n" +

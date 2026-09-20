@@ -10,12 +10,22 @@
 | 文件/目录 | 说明 |
 |-----------|------|
 | [架构图/](架构图/README.md) | 源码级架构图集：包树总览、scene 渲染管线、配置/网络/字体/物品渲染子系统、帧管线时序 |
-| [规格文档/](规格文档/README.md) | 场景基础 API 规范、宿主语义、物品渲染合同与视觉规格（现行规范母本） |
+| [规格文档/](规格文档/README.md) | 场景基础 API 规范、宿主语义、物品渲染合同与视觉规格（**现行规范与在办材料，按文件状态阅读**——目录内同时存在未实施的规划，不得按目录名推断已实现） |
 | [布局约束与踩坑.md](布局约束与踩坑.md) | scene 宽度模型（FILL/SHRINK）与 ROW 行内控件、mount 挂载等高频布局坑，写控件/演示页前必读 |
 | [Minecraft原版输入链路.md](Minecraft原版输入链路.md) | 原版 GuiScreen/GuiContainer 键鼠分发内部架构分析 |
 | [LaTeX命令支持清单.md](LaTeX命令支持清单.md) | 数学子集的现行能力清单：支持 / 近似 / 字面降级范围（不执行宏定义与包加载） |
 | [HUD工具栏图标来源.md](HUD工具栏图标来源.md) | 聊天工具栏图标的素材来源、固定版本与 Apache-2.0 许可归属 |
 | [发布流程.md](发布流程.md) | Qz-UILib 发布流程唯一权威（tag / FML 范围 / changelog / 资产工作流） |
+
+## 构建、产物守卫与按需诊断
+
+| 入口 | 覆盖什么 | 运行条件 |
+|------|----------|----------|
+| [.github/workflows/build-and-test.yml](../../.github/workflows/build-and-test.yml) | 委托固定提交的上游 reusable workflow（构建 + 测试），并额外执行脚本宿主检查：拒绝受版本控制的 `.ps1` 与 workflow 文本中的 PowerShell 令牌 | push / PR 自动运行。远端 reusable workflow 的具体检查项不在本仓维护，不要据此推断「CI 已检查文档」 |
+| [build.gradle.kts](../../build.gradle.kts) 的 `verifyDevToolsNotPackaged` | 逐个打开 `jar / shadowJar / sourcesJar / apiJar / reobfJar`，断言 `club/heiqi/uilib/internal/devtools` 整包不在产物内 | `check`（含 `build`）自动带上；改动打包任务、devtools 包路径或新增产物任务时必看 |
+| [tools/audit/README.md](../../tools/audit/README.md) | 按需诊断脚本：对比度/合成色数值、文档数值可追溯性、表面属性写入者扫描、legacy 兼容入口零点核验 | 手动运行，**不参与提交阻断、不维护清单文件**；只在需要结论时算一遍 |
+
+文档检查（本地链接目标、锚点、状态一致性）目前没有常驻门禁：若后续引入，先只对改动文件报告、积累实际误报后再决定是否阻断，不恢复已退役的注册表、逐实例台账或源码字面快照测试。
 
 ## 已收口材料（不作为当前施工依据）
 

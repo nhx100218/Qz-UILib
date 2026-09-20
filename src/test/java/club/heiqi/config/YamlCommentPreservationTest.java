@@ -190,9 +190,10 @@ public class YamlCommentPreservationTest {
      * 用例 8：注释 + 值保真。
      * 读入带注释的配置，round-trip 写回后注释保留且所有值更新/保真。
      *
-     * <p>注：本用例验证 round-trip 后注释与值同时保留。涉及 MutableConfig.set 修改值
-     * 并保留注释的场景，因 DefaultMutableConfig 内部用 Map&lt;String,Object&gt; 存储
-     * （注释元数据无法在 Map 中携带），注释会丢失——该路径的注释保留为已知遗留 TODO。</p>
+     * <p>注：{@code MutableConfig.set} 修改值后再保存同样按路径保留注释（未变路径的块/内联/
+     * 列表元素注释原样归位，被删路径的注释随路径消失），归属口径见
+     * {@code DefaultMutableConfig#convertToImmutableNode(Object, ConfigNode)}；
+     * 回归用例见 {@code MutableConfigTest#modifiedSaveKeepsUnrelatedYamlComments}。</p>
      */
     @Test
     public void commentAndValuePreservedAfterRoundTrip() throws ConfigException {
