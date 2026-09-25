@@ -48,6 +48,23 @@ public final class ConfigSchema {
                 map.put(f.path(), f);
             }
         }
+        // 旧键归属在 schema 冻结时确定；禁止依赖加载遍历顺序解决歧义。
+        Map<String, FieldSpec> aliasOwners = new LinkedHashMap<String, FieldSpec>();
+        for (SectionSpec section : this.sections) {
+            for (FieldSpec field : section.fields()) {
+                for (String alias : field.legacyAliases()) {
+                    String prefix = section.name() + ".";
+                    if (!field.path().startsWith(prefix)
+                            || field.path().substring(prefix.length()).indexOf('.') >= 0) {
+                        throw new IllegalArgumentException("别名字段必须直属其 section: " + field.path());
+                    }
+                    String aliasPath = prefix + alias;
+                    if (map.containsKey(aliasPath) || aliasOwners.put(aliasPath, field) != null) {
+                        throw new IllegalArgumentException("旧键与字段或其他旧键冲突: " + aliasPath);
+                    }
+                }
+            }
+        }
         this.byPath = Collections.unmodifiableMap(map);
     }
 

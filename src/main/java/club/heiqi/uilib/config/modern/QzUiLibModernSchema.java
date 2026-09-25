@@ -115,9 +115,9 @@ public final class QzUiLibModernSchema {
                 .endSection()
                 .section("fontSizeSetting")
                     .title("Font Size")
-                    .number("glyphGenerationSize").defaultValue(Double.valueOf(64.0)).range(8, 256)
+                    .number("glyphGenerationSize").legacyAliases("awtCharSize").defaultValue(Double.valueOf(64.0)).range(8, 256)
                         .label("glyphGenerationSize").helper("字形生成分辨率（atlas 坐标系）；与 gameCharSize 的比值是显示侧缩放因子，调高更清晰但图集显存随之增大").build()
-                    .number("gameCharSize").defaultValue(Double.valueOf(9.0)).range(1, 72)
+                    .number("gameCharSize").legacyAliases("charSize").defaultValue(Double.valueOf(9.0)).range(1, 72)
                         .label("gameCharSize").helper("游戏字符大小：原版字符的默认显示字号，同时是宽度与行高折算的基准；改它等于改原版观感并触发字形重建").build()
                 .endSection()
                 .build();

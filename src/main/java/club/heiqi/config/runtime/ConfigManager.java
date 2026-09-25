@@ -42,7 +42,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  *
  * <h3>reload 三阶段</h3>
  * <ol>
- *   <li><b>capture</b>（manager 锁内）：记录 Authority 深快照 / identity 与 expected 基线，
+ *   <li><b>capture</b>（manager 锁内）：记录全权威变更代数与 expected 基线，
  *       并取 disk snapshot。</li>
  *   <li><b>validate</b>（锁外）：完整内置+custom 校验；失败抛 {@link ConfigReloadException}
  *      （VALIDATION/IO），零推进零事件。disk 路径按 FieldType 严格 NodeType
@@ -194,15 +194,15 @@ public final class ConfigManager {
             throw notificationConflictException("reload");
         }
 
-        // ---- phase 1 capture：manager 锁内记录 Authority 深快照 + expected 基线 + disk snapshot ----
-        final Map<String, Object> authorityBaseline;
+        // ---- phase 1 capture：manager 锁内记录全权威代数 + expected 基线 + disk snapshot ----
+        final long authorityBaseline;
         final ConfigFileSnapshot expectedBaseline;
         final ConfigFileSnapshot diskSnap;
         synchronized (transactionLock) {
             if (isNotificationActive()) {
                 throw notificationConflictException("reload");
             }
-            authorityBaseline = authority.deepSnapshotTyped();
+            authorityBaseline = authority.mutationRevision();
             expectedBaseline = expectedDiskSnapshot;
             try {
                 diskSnap = ConfigFileSnapshot.capture(persistence.file());
@@ -263,7 +263,7 @@ public final class ConfigManager {
             if (isNotificationActive()) {
                 throw notificationConflictException("reload");
             }
-            if (!authority.matchesDeepSnapshot(authorityBaseline)) {
+            if (authority.mutationRevision() != authorityBaseline) {
                 throw new ConfigReloadException(
                         SaveOutcome.ConflictType.AUTHORITY_MODIFIED_DURING_SAVE,
                         "authority was modified during reload validation");
@@ -278,7 +278,7 @@ public final class ConfigManager {
                 @Override
                 public void run() {
                     try {
-                        if (!authority.matchesDeepSnapshot(authorityBaseline)) {
+                        if (authority.mutationRevision() != authorityBaseline) {
                             conflictHolder[0] = new ConfigReloadException(
                                     SaveOutcome.ConflictType.AUTHORITY_MODIFIED_DURING_SAVE,
                                     "authority was modified during reload commit");
@@ -365,7 +365,7 @@ public final class ConfigManager {
             return prepared.failure;
         }
 
-        SaveOutcome outcome = verifyWriteAndCommit(draft, capture.candidate, prepared, capture.expectedBaseline);
+        SaveOutcome outcome = verifyWriteAndCommit(draft, capture.candidate, prepared, capture.expectedBaseline, capture.mutationBaseline);
         if (outcome.isSuccess()) {
             try {
                 eventBus.publish(new ConfigChangeEvent("", null, null, ConfigChangeEvent.ChangeType.BATCH_SAVE));
@@ -391,12 +391,13 @@ public final class ConfigManager {
                 public Capture run() {
                     try {
                         DraftBuffer.TransactionCandidate candidate = draft.captureCandidate();
-                        if (!authority.matchesDeepSnapshot(candidate.baseValues())) {
+                        if (authority.revision() != candidate.baseRevision()) {
                             return Capture.failed(conflict(
                                     SaveOutcome.ConflictType.STALE_DRAFT_BASE,
                                     "draft base no longer matches authority"));
                         }
-                        return Capture.success(candidate, expectedBaseline);
+                        candidate = candidate.withCurrentOverlay(authority.snapshotTyped());
+                        return Capture.success(candidate, expectedBaseline, authority.mutationRevision());
                     } catch (RuntimeException e) {
                         return Capture.failed(SaveOutcome.invalid(
                                 globalFail("capture candidate failed: " + msg(e))));
@@ -451,7 +452,8 @@ public final class ConfigManager {
             final DraftBuffer draft,
             final DraftBuffer.TransactionCandidate candidate,
             final PreparedTransaction prepared,
-            final ConfigFileSnapshot expectedBaseline) {
+            final ConfigFileSnapshot expectedBaseline,
+            final long mutationBaseline) {
         synchronized (transactionLock) {
             if (isNotificationActive()) {
                 return notificationConflict();
@@ -464,7 +466,7 @@ public final class ConfigManager {
                                 SaveOutcome.ConflictType.DRAFT_MODIFIED_DURING_SAVE,
                                 "draft was modified during save");
                     }
-                    if (!authority.matchesDeepSnapshot(candidate.baseValues())) {
+                    if (authority.mutationRevision() != mutationBaseline) {
                         return conflict(
                                 SaveOutcome.ConflictType.AUTHORITY_MODIFIED_DURING_SAVE,
                                 "authority was modified during save");
@@ -488,7 +490,7 @@ public final class ConfigManager {
                     }
                     expectedDiskSnapshot = newExpected;
                     authority.commitPrepared(prepared.authorityState);
-                    draft.applyPreparedCommit(prepared.draftCommit);
+                    draft.applyPreparedCommit(prepared.draftCommit, authority.revision());
                     notificationDepth.incrementAndGet();
                     authority.setMutationGuard(notificationBlockGuard);
                     return SaveOutcome.ok();
@@ -500,25 +502,29 @@ public final class ConfigManager {
     /**
      * 将 Authority 当前值 flush 到磁盘（走同一写前检测路径）。
      *
-     * <p>capture 冻结 Authority 深快照 + expected 基线；prepare 锁外；commit 复核两者仍匹配，
+     * <p>capture 冻结 Authority 值快照、全权威代数与 expected 基线；prepare 锁外；commit 复核两个基线，
      * 并用<strong>冻结 expected 基线</strong>做 cas——不得无条件取最新 expected。</p>
      *
      * <p>通知期抛 {@link ConfigConflictException}（SAVE_DURING_NOTIFICATION）。</p>
      *
      * @throws ConfigConflictException 磁盘与 expected 不等、expected 基线漂移或通知期
      * @throws ConfigException         预制/IO 失败
+     * @deprecated 新代码使用 openDraft/save 事务；此方法仅供 Legacy raw 兼容路径持久化。
      */
+    @Deprecated
     public void flushRaw() throws ConfigException {
         if (isNotificationActive()) {
             throw notificationConflictException("flushRaw");
         }
         Map<String, Object> snapshot;
+        long mutationBaseline;
         ConfigFileSnapshot expectedBaseline;
         synchronized (transactionLock) {
             if (isNotificationActive()) {
                 throw notificationConflictException("flushRaw");
             }
             snapshot = authority.deepSnapshotTyped();
+            mutationBaseline = authority.mutationRevision();
             expectedBaseline = expectedDiskSnapshot;
         }
         Persistence.PreparedWrite prepared = persistence.prepareWrite(snapshot, authority.schema());
@@ -526,8 +532,10 @@ public final class ConfigManager {
             if (isNotificationActive()) {
                 throw notificationConflictException("flushRaw");
             }
-            if (!authority.matchesDeepSnapshot(snapshot)) {
-                throw new ConfigException("authority was modified while preparing flushRaw");
+            if (authority.mutationRevision() != mutationBaseline) {
+                throw new ConfigConflictException(
+                        SaveOutcome.ConflictType.AUTHORITY_MODIFIED_DURING_SAVE,
+                        "authority was modified while preparing flushRaw");
             }
             if (!sameExpectedBaseline(expectedDiskSnapshot, expectedBaseline)) {
                 throw new ConfigConflictException(
@@ -670,22 +678,24 @@ public final class ConfigManager {
         /** capture 时冻结的 expected 基线；commit cas 必须用此，不得改取最新 */
         private final ConfigFileSnapshot expectedBaseline;
         private final SaveOutcome failure;
+        private final long mutationBaseline;
 
         private Capture(DraftBuffer.TransactionCandidate candidate,
                         ConfigFileSnapshot expectedBaseline,
-                        SaveOutcome failure) {
+                        SaveOutcome failure, long mutationBaseline) {
+            this.mutationBaseline = mutationBaseline;
             this.candidate = candidate;
             this.expectedBaseline = expectedBaseline;
             this.failure = failure;
         }
 
         private static Capture success(DraftBuffer.TransactionCandidate candidate,
-                                       ConfigFileSnapshot expectedBaseline) {
-            return new Capture(candidate, expectedBaseline, null);
+                                       ConfigFileSnapshot expectedBaseline, long mutationBaseline) {
+            return new Capture(candidate, expectedBaseline, null, mutationBaseline);
         }
 
         private static Capture failed(SaveOutcome failure) {
-            return new Capture(null, null, failure);
+            return new Capture(null, null, failure, 0L);
         }
     }
 

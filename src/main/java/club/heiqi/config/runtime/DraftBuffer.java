@@ -20,7 +20,7 @@ import java.util.Objects;
  *
  * <p>三份表语义：</p>
  * <ul>
- *   <li>{@code baseValues}：打开草稿时从 Authority 冻结的事务基线；{@link #captureCandidate()} 只取这里做乐观比较</li>
+ *   <li>{@code baseValues}：打开或成功保存时冻结的值快照；冲突由独立 schema 基线代数判定</li>
  *   <li>{@code currentValues}：UI dirty 对照基线（用户编辑前的「当前已提交到本草稿视角」的值）</li>
  *   <li>{@code draftValues}：用户编辑中的草稿</li>
  * </ul>
@@ -41,8 +41,10 @@ public final class DraftBuffer {
      * 不对外暴露对象本身；仅 {@link #hasSameOwner(DraftBuffer)} / 包内 identity 比对。
      */
     private final Object ownerToken;
-    /** 事务基线（open 时 Authority 深拷贝）；capture/commit 乐观比较用，不被 prefill/setDraftAndCurrent 改写 */
+    /** 最近成功提交的值基线，仅供快照读取，不参与冲突判定。 */
     private Map<String, Object> baseValues;
+    /** open/成功 save 时绑定的 schema revision；预填与本地提交不能重设。 */
+    private long baseRevision;
     private Map<String, Object> currentValues;
     private Map<String, Object> draftValues;
     private final Object lock = new Object();
@@ -58,11 +60,13 @@ public final class DraftBuffer {
      */
     private DraftBuffer(ConfigSchema schema,
                         Object ownerToken,
+                        long baseRevision,
                         Map<String, Object> seedForBase,
                         Map<String, Object> seedForCurrent,
                         Map<String, Object> seedForDraft) {
         this.schema = schema;
         this.ownerToken = ownerToken;
+        this.baseRevision = baseRevision;
         this.baseValues = new LinkedHashMap<String, Object>(seedForBase);
         this.currentValues = new LinkedHashMap<String, Object>(seedForCurrent);
         this.draftValues = new LinkedHashMap<String, Object>(seedForDraft);
@@ -94,11 +98,15 @@ public final class DraftBuffer {
         if (authority == null) {
             throw new IllegalArgumentException("authority must not be null");
         }
-        Map<String, Object> snap = authority.snapshotTyped();
-        Map<String, Object> forBase = ValueCopy.copyMapValues(snap);
-        Map<String, Object> forCurrent = ValueCopy.copyMapValues(snap);
-        Map<String, Object> forDraft = ValueCopy.copyMapValues(snap);
-        return new DraftBuffer(authority.schema(), ownerToken, forBase, forCurrent, forDraft);
+        // 包括未绑定 owner 的公开工厂，seed 与代数也必须来自同一原子观察。
+        synchronized (authority.transactionLock()) {
+            Map<String, Object> snap = authority.snapshotTyped();
+            Map<String, Object> forBase = ValueCopy.copyMapValues(snap);
+            Map<String, Object> forCurrent = ValueCopy.copyMapValues(snap);
+            Map<String, Object> forDraft = ValueCopy.copyMapValues(snap);
+            return new DraftBuffer(authority.schema(), ownerToken, authority.revision(),
+                    forBase, forCurrent, forDraft);
+        }
     }
 
     /**
@@ -352,7 +360,6 @@ public final class DraftBuffer {
      */
     TransactionCandidate captureCandidate() {
         synchronized (lock) {
-            Map<String, Object> base = ValueCopy.copyMapValues(baseValues);
             Map<String, Object> proposed = ValueCopy.copyMapValues(draftValues);
             Map<String, Object> schemaFields = new LinkedHashMap<String, Object>();
             for (FieldSpec field : schema.allFields()) {
@@ -363,7 +370,7 @@ public final class DraftBuffer {
             }
             return new TransactionCandidate(
                     revision,
-                    Collections.unmodifiableMap(base),
+                    baseRevision,
                     Collections.unmodifiableMap(schemaFields),
                     Collections.unmodifiableMap(proposed));
         }
@@ -421,6 +428,11 @@ public final class DraftBuffer {
      *
      * @param prepared 预制 commit
      */
+    void applyPreparedCommit(PreparedCommit prepared, long committedRevision) {
+        applyPreparedCommit(prepared);
+        baseRevision = committedRevision;
+    }
+
     void applyPreparedCommit(PreparedCommit prepared) {
         if (prepared == null) {
             throw new IllegalArgumentException("prepared must not be null");
@@ -450,8 +462,8 @@ public final class DraftBuffer {
     }
 
     /**
-     * 兼容旧测试：current = 当前 draft 的防御拷贝，并推进 base 以保持事务一致。
-     * 新事务路径请用 {@link #commitCandidateToCurrent}。
+     * 本地提交：current/base 值快照对齐当前 draft；不改变 Authority schema 基线代数。
+     * 权威基线只能由 open 或 ConfigManager 成功保存绑定，不能用此入口消除陈旧冲突。
      */
     public void commitDraftToCurrent() {
         synchronized (lock) {
@@ -665,16 +677,16 @@ public final class DraftBuffer {
      */
     static final class TransactionCandidate {
         private final long revision;
-        private final Map<String, Object> baseValues;
+        private final long baseRevision;
         private final Map<String, Object> schemaFieldValues;
         private final Map<String, Object> proposedValues;
 
         TransactionCandidate(long revision,
-                             Map<String, Object> baseValues,
+                             long baseRevision,
                              Map<String, Object> schemaFieldValues,
                              Map<String, Object> proposedValues) {
             this.revision = revision;
-            this.baseValues = baseValues;
+            this.baseRevision = baseRevision;
             this.schemaFieldValues = schemaFieldValues;
             this.proposedValues = proposedValues;
         }
@@ -683,8 +695,16 @@ public final class DraftBuffer {
             return revision;
         }
 
-        Map<String, Object> baseValues() {
-            return baseValues;
+        long baseRevision() {
+            return baseRevision;
+        }
+
+        /** capture 在 manager 锁内合入最新 overlay；草稿只能覆盖 schema 字段。 */
+        TransactionCandidate withCurrentOverlay(Map<String, Object> authorityValues) {
+            Map<String, Object> merged = ValueCopy.copyMapValues(authorityValues);
+            merged.putAll(schemaFieldValues);
+            return new TransactionCandidate(revision, baseRevision, schemaFieldValues,
+                    Collections.unmodifiableMap(merged));
         }
 
         Map<String, Object> schemaFieldValues() {

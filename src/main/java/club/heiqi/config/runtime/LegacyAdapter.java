@@ -65,7 +65,9 @@ public final class LegacyAdapter {
      * @param path 字段路径
      * @param json YAML 文本
      * @throws ConfigException 文本解析失败或通知期封锁
+     * @deprecated schema 编辑应通过 ConfigManager 草稿事务；此入口仅保留旧调用兼容。
      */
+    @Deprecated
     public void setRawJson(String path, String json) throws ConfigException {
         ConfigNode parsed = ConfigSerializer.parse(json, ConfigFormat.YAML);
         authority.putRaw(path, parsed);

@@ -18,7 +18,6 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 
 /**
  * 内存权威快照，保存事务的唯一"真相源"。
@@ -35,7 +34,6 @@ import java.util.Objects;
  *       <b>schema 优先仅限 MAP overlay</b>：若 disk 上 schema section 为 scalar/list
  *       （非 MAP），bootstrap/reload <strong>fail-closed</strong> 抛
  *       {@link ConfigException}，禁止静默用默认覆盖整段。</li>
- *   <li>{@link #applyAll(Map)} 保留兼容签名；保存事务使用 prepared state 引用交换。</li>
  *   <li>{@link #snapshotTyped()} 供 {@link DraftBuffer} 深拷贝种子（含 raw overlay）。</li>
  *   <li>{@link #getRaw(String)} / {@link #putRaw(String, Object)} 供 {@link LegacyAdapter} 受控访问。
  *       schema 字段 putRaw 按 FieldType 严格 NodeType 提取，错型抛 {@link ConfigException} 且
@@ -62,6 +60,16 @@ public final class Authority {
      * schema section 名 → 该 section 内未知字段 raw overlay（ConfigNode，仅未知子键）。
      */
     private Map<String, Object> typedValues;
+    /** schema 提交代数：同值写入也推进；未知字段不使已打开草稿过期。 */
+    private long revision = 0L;
+    /** 全权威变更代数：保护包含 overlay 的锁外写盘准备，拒绝内存 ABA。 */
+    private long mutationRevision = 0L;
+
+    long mutationRevision() {
+        synchronized (transactionLock) {
+            return mutationRevision;
+        }
+    }
     /** Authority、Legacy 与 ConfigManager 保存事务共享的锁域 */
     private final Object transactionLock;
     private final LegacyAdapter legacyAdapter;
@@ -159,6 +167,7 @@ public final class Authority {
         }
         // section 形态守卫：scalar/list 不得静默走 candidate 折叠
         assertSchemaSectionsAreMaps(root, schema);
+        root = normalizeLegacyAliases(root, schema);
         Map<String, Object> schemaFields = new LinkedHashMap<String, Object>();
         for (FieldSpec field : schema.allFields()) {
             ConfigNode node = root != null ? root.get(field.path()) : null;
@@ -267,16 +276,6 @@ public final class Authority {
         }
     }
 
-    void replaceAllFrom(Authority other) {
-        if (other == null) {
-            throw new IllegalArgumentException("other must not be null");
-        }
-        if (!Thread.holdsLock(transactionLock)) {
-            throw new IllegalStateException("authority transaction lock is required for replaceAllFrom");
-        }
-        this.typedValues = ValueCopy.copyMapValues(other.typedValues);
-    }
-
     void commitReloadSchemaFields(Map<String, Object> schemaFieldValues, Authority nonSchemaFrom) {
         if (!Thread.holdsLock(transactionLock)) {
             throw new IllegalStateException("authority transaction lock is required for commitReloadSchemaFields");
@@ -294,15 +293,54 @@ public final class Authority {
             }
         }
         this.typedValues = next;
+        revision++;  // reload 无条件推进（即使值相同）
+        mutationRevision++;
     }
 
     /**
-     * 从解析根构建 Authority：schema typed + 顶层 unknown + section 内 unknown raw overlay。
-     * 未知字段不得静默丢弃。schema section 非 MAP 则 fail-closed。
+     * load/reload 共用的加载期归一：按键存在性选值，新键含 null 优先，否则取首个存在的旧键。
+     * 删除所有已声明旧键并保留未知字段；只改解析树，不推进权威代数、不写盘。
      */
+    private static ConfigNode normalizeLegacyAliases(ConfigNode root, ConfigSchema schema) {
+        if (root == null || root.getType() != ConfigNode.NodeType.MAP) {
+            return root;
+        }
+        MutableConfig normalized = null;
+        for (FieldSpec field : schema.allFields()) {
+            if (field.legacyAliases().isEmpty()) {
+                continue;
+            }
+            int dot = field.path().lastIndexOf('.');
+            String section = field.path().substring(0, dot);
+            ConfigNode sectionNode = root.get(section);
+            if (sectionNode == null || sectionNode.getType() != ConfigNode.NodeType.MAP) {
+                continue;
+            }
+            Map<String, ConfigNode> values = sectionNode.asMap();
+            boolean selected = values.containsKey(field.path().substring(dot + 1));
+            for (String alias : field.legacyAliases()) {
+                if (!values.containsKey(alias)) {
+                    continue;
+                }
+                if (normalized == null) {
+                    normalized = Config.createMutable(ConfigFormat.YAML);
+                    loadSubtreeInto(normalized, root);
+                }
+                if (!selected) {
+                    normalized.set(field.path(), values.get(alias));
+                    selected = true;
+                }
+                normalized.remove(section + "." + alias);
+            }
+        }
+        // 只归一内存解析树；磁盘 expected 仍保留实际读到的原始字节。
+        return normalized == null ? root : normalized.asImmutable();
+    }
+
     private static Authority fromRoot(ConfigNode root, ConfigSchema schema) throws ConfigException {
         // schema section 必须是 MAP（或缺失）；scalar/list 禁止静默默认覆盖
         assertSchemaSectionsAreMaps(root, schema);
+        root = normalizeLegacyAliases(root, schema);
 
         Map<String, Object> typed = new HashMap<String, Object>();
 
@@ -484,6 +522,18 @@ public final class Authority {
         }
     }
 
+    /**
+     * 返回当前权威的变更代数（单调递增）。
+     * 每次 schema 字段提交（save / reload / putRaw schema 路径）推进一次。
+     *
+     * @return 当前 revision，初始 0
+     */
+    public long revision() {
+        synchronized (transactionLock) {
+            return revision;
+        }
+    }
+
     @SuppressWarnings("unchecked")
     public <T> T get(String path) {
         synchronized (transactionLock) {
@@ -518,75 +568,12 @@ public final class Authority {
         }
     }
 
-    /**
-     * 一次性迁移读取：取 schema section 内<b>非 schema 子键</b>的数值，并从权威态移除该键。
-     *
-     * <p>用途 = 配置项改名后的兼容读取。历史键在新 schema 里不再声明，{@code fromRoot} 会把它收进
-     * section raw overlay（键 = section 名，仅含未知子键）；本方法读出该值后从内存态删除，
-     * 使下一次保存不再写出历史键。<b>若只读不删</b>，历史键会长期留在文件里、每次启动覆盖新键，
-     * 用户在 UI 改新键也会被顶回。</p>
-     *
-     * <p>只改内存态，落盘由保存事务负责。键不存在 / overlay 非 MAP / 值非 NUMBER 或非有限
-     * 一律返回 null（不抛、不猜）。</p>
-     *
-     * @param section   schema 顶层 section 名
-     * @param legacyKey section 内的历史子键
-     * @return 历史键的数值；不可用时 null
-     */
-    public Double consumeLegacySectionNumber(String section, String legacyKey) {
-        if (section == null || legacyKey == null) {
-            return null;
-        }
-        synchronized (transactionLock) {
-            Object stored = typedValues.get(section);
-            if (!(stored instanceof ConfigNode)) {
-                return null;
-            }
-            ConfigNode overlay = (ConfigNode) stored;
-            if (overlay.isNull() || overlay.getType() != ConfigNode.NodeType.MAP) {
-                return null;
-            }
-            ConfigNode child = overlay.get(legacyKey);
-            if (child == null || child.isNull() || child.getType() != ConfigNode.NodeType.NUMBER) {
-                return null;
-            }
-            double value;
-            try {
-                value = child.asDouble();
-            } catch (ConfigException e) {
-                return null;
-            }
-            if (!UiNumbers.isFinite(value)) {
-                return null;
-            }
-            MutableConfig trimmed = Config.createMutable(ConfigFormat.YAML);
-            loadSubtreeInto(trimmed, overlay);
-            trimmed.remove(legacyKey);
-            ConfigNode after = trimmed.asImmutable();
-            Map<String, ConfigNode> remaining =
-                    after.getType() == ConfigNode.NodeType.MAP ? after.asMap() : null;
-            if (remaining == null || remaining.isEmpty()) {
-                typedValues.remove(section);
-            } else {
-                typedValues.put(section, ValueCopy.copyOf(after));
-            }
-            return Double.valueOf(value);
-        }
-    }
-
     public ConfigSchema schema() {
         return schema;
     }
 
     public LegacyAdapter legacy() {
         return legacyAdapter;
-    }
-
-    void applyAll(Map<String, Object> newValues) {
-        PreparedState prepared = prepareState(newValues);
-        synchronized (transactionLock) {
-            commitPrepared(prepared);
-        }
     }
 
     PreparedState prepareState(Map<String, Object> newValues) {
@@ -604,6 +591,8 @@ public final class Authority {
             throw new IllegalStateException("authority transaction lock is required for commit");
         }
         typedValues = prepared.values;
+        revision++;  // save 事务提交推进代数
+        mutationRevision++;
     }
 
     Map<String, Object> snapshotTyped() {
@@ -614,67 +603,6 @@ public final class Authority {
 
     Map<String, Object> deepSnapshotTyped() {
         return snapshotTyped();
-    }
-
-    boolean matchesDeepSnapshot(Map<String, Object> snapshot) {
-        synchronized (transactionLock) {
-            if (snapshot == null || typedValues.size() != snapshot.size()) {
-                return false;
-            }
-            for (Map.Entry<String, Object> e : typedValues.entrySet()) {
-                if (!valueDeepEquals(e.getValue(), snapshot.get(e.getKey()))) {
-                    return false;
-                }
-            }
-            return true;
-        }
-    }
-
-    private static boolean valueDeepEquals(Object a, Object b) {
-        if (a == b) {
-            return true;
-        }
-        if (a == null || b == null) {
-            return false;
-        }
-        if (a instanceof ConfigNode && b instanceof ConfigNode) {
-            try {
-                String sa = club.heiqi.config.ConfigSerializer.toString(
-                        (ConfigNode) a, club.heiqi.config.ConfigFormat.YAML);
-                String sb = club.heiqi.config.ConfigSerializer.toString(
-                        (ConfigNode) b, club.heiqi.config.ConfigFormat.YAML);
-                return Objects.equals(sa, sb);
-            } catch (RuntimeException e) {
-                return false;
-            }
-        }
-        if (a instanceof List && b instanceof List) {
-            List<?> la = (List<?>) a;
-            List<?> lb = (List<?>) b;
-            if (la.size() != lb.size()) {
-                return false;
-            }
-            for (int i = 0; i < la.size(); i++) {
-                if (!valueDeepEquals(la.get(i), lb.get(i))) {
-                    return false;
-                }
-            }
-            return true;
-        }
-        if (a instanceof Map && b instanceof Map) {
-            Map<?, ?> ma = (Map<?, ?>) a;
-            Map<?, ?> mb = (Map<?, ?>) b;
-            if (ma.size() != mb.size()) {
-                return false;
-            }
-            for (Map.Entry<?, ?> e : ma.entrySet()) {
-                if (!valueDeepEquals(e.getValue(), mb.get(e.getKey()))) {
-                    return false;
-                }
-            }
-            return true;
-        }
-        return Objects.equals(a, b);
     }
 
     ConfigNode getRaw(String path) {
@@ -730,6 +658,8 @@ public final class Authority {
                     if (!node.isNull()) {
                         Object typed = extractTypedStrictForLoad(node, schema.field(path));
                         typedValues.put(path, typed);
+                        revision++;
+                        mutationRevision++;
                     }
                 } else if (value != null) {
                     throw new ConfigException(
@@ -743,6 +673,7 @@ public final class Authority {
             if (parts.length == 1) {
                 if (value == null) {
                     typedValues.remove(topKey);
+                    mutationRevision++;
                 } else if (schema.containsTopLevel(topKey)) {
                     if (!(value instanceof ConfigNode)) {
                         throw invalidSchemaSectionType(topKey, null);
@@ -756,6 +687,10 @@ public final class Authority {
                     for (Map.Entry<String, Object> entry : mutation.typedValues.entrySet()) {
                         typedValues.put(entry.getKey(), entry.getValue());
                     }
+                    if (!mutation.typedValues.isEmpty()) {
+                        revision++;
+                    }
+                    mutationRevision++;
                     if (mutation.overlay == null) {
                         typedValues.remove(topKey);
                     } else {
@@ -763,6 +698,7 @@ public final class Authority {
                     }
                 } else if (value instanceof ConfigNode) {
                     typedValues.put(topKey, ValueCopy.copyOf(value));
+                    mutationRevision++;
                 }
                 return;
             }
@@ -793,6 +729,7 @@ public final class Authority {
                 } else {
                     typedValues.put(topKey, ValueCopy.copyOf(after));
                 }
+                mutationRevision++;
                 return;
             }
             Object existing = typedValues.get(topKey);
@@ -809,6 +746,7 @@ public final class Authority {
             }
             mc.set(sub.toString(), value);
             typedValues.put(topKey, ValueCopy.copyOf(mc.asImmutable()));
+            mutationRevision++;
         }
     }
 

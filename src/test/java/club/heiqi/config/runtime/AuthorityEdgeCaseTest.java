@@ -25,7 +25,7 @@ import static org.junit.Assert.fail;
 
 /**
  * {@link Authority} 边界用例测试，覆盖损坏 YAML、类型不匹配、非 Schema 子树、
- * applyAll 空Map、getRaw/putRaw 对 Schema 字段等异常与边界场景。
+ * preparedCommit 空Map、getRaw/putRaw 对 Schema 字段等异常与边界场景。
  */
 public class AuthorityEdgeCaseTest {
 
@@ -163,10 +163,10 @@ public class AuthorityEdgeCaseTest {
     }
 
     /**
-     * applyAll 后 snapshotTyped 反映新值。
+     * preparedCommit 后 snapshotTyped 反映新值。
      */
     @Test
-    public void applyAllReflectedInSnapshotTyped() throws Exception {
+    public void preparedCommitReflectedInSnapshotTyped() throws Exception {
         File file = tempFolder.newFile("config.yaml");
         ConfigSchema schema = SchemaTestFactory.serverSchema();
         Authority authority = Authority.load(file, schema);
@@ -174,7 +174,10 @@ public class AuthorityEdgeCaseTest {
         Map<String, Object> newValues = new HashMap<String, Object>();
         newValues.put("server.host", "new.host");
         newValues.put("server.port", 1234.0);
-        authority.applyAll(newValues);
+        Authority.PreparedState prepared = authority.prepareState(newValues);
+        synchronized (authority.transactionLock()) {
+            authority.commitPrepared(prepared);
+        }
 
         Map<String, Object> snapshot = authority.snapshotTyped();
         assertEquals("new.host", snapshot.get("server.host"));
@@ -182,20 +185,19 @@ public class AuthorityEdgeCaseTest {
     }
 
     /**
-     * applyAll 空 Map：清空所有 typed 值。
-     * 验证当前行为：applyAll(null) → typedValues=new HashMap，所有 get 返回默认回退值。
+     * Legacy 删除 schema 路径保持既有值，不存在绕过事务的整表清空入口。
      */
     @Test
-    public void applyAllNullClearsTypedValues() throws Exception {
+    public void legacyNullDoesNotClearSchemaValues() throws Exception {
         File file = tempFolder.newFile("config.yaml");
         ConfigSchema schema = SchemaTestFactory.serverSchema();
         Authority authority = Authority.load(file, schema);
 
-        authority.applyAll(null);
+        authority.legacy().setRawJson("server.host", "null");
 
-        // 验证当前行为：清空后 getString 返回 null，getNumber 返回 0.0，getBool 返回 false
-        assertNull(authority.getString("server.host"));
-        assertEquals(0.0, authority.getNumber("server.port"), 0.0);
+        // 删除兼容入口不得清空 schema 字段。
+        assertEquals("localhost", authority.getString("server.host"));
+        assertEquals(8080.0, authority.getNumber("server.port"), 0.0);
         assertFalse(authority.getBool("server.debug"));
     }
 

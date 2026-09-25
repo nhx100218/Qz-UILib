@@ -300,7 +300,8 @@ public class ConfigReloadValidationAndNotificationTest {
         assertNotNull(saveOut.get());
         assertTrue("旧 save 必须冲突: " + saveOut.get().status() + " " + saveOut.get().conflictType(),
                 saveOut.get().isConflict());
-        assertEquals(SaveOutcome.ConflictType.CONFIG_FILE_CHANGED_SINCE_LOAD, saveOut.get().conflictType());
+        // 同值 reload 也推进权威代数，准备窗口先报告权威冲突。
+        assertEquals(SaveOutcome.ConflictType.AUTHORITY_MODIFIED_DURING_SAVE, saveOut.get().conflictType());
         assertEquals("a", manager.authority().getString("server.host"));
     }
 

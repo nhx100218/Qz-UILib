@@ -24,7 +24,7 @@ import static org.junit.Assert.assertTrue;
 
 /**
  * {@link Authority} 测试，覆盖启动加载补默认、typed 读取、非 Schema 透传、
- * applyAll 替换、snapshotTyped 深拷贝。
+ * preparedCommit 替换、snapshotTyped 深拷贝。
  */
 public class AuthorityTest {
 
@@ -114,10 +114,10 @@ public class AuthorityTest {
     }
 
     /**
-     * applyAll 替换后 get 返回新值。
+     * preparedCommit 替换后 get 返回新值。
      */
     @Test
-    public void applyAllReplacesTypedValues() throws Exception {
+    public void preparedCommitReplacesTypedValues() throws Exception {
         File file = tempFolder.newFile("config.yaml");
         ConfigSchema schema = SchemaTestFactory.serverSchema();
         Authority authority = Authority.load(file, schema);
@@ -127,7 +127,10 @@ public class AuthorityTest {
         newValues.put("server.port", 9999.0);
         newValues.put("server.debug", true);
         newValues.put("server.mode", "test");
-        authority.applyAll(newValues);
+        Authority.PreparedState prepared = authority.prepareState(newValues);
+        synchronized (authority.transactionLock()) {
+            authority.commitPrepared(prepared);
+        }
 
         assertEquals("0.0.0.0", authority.getString("server.host"));
         assertEquals(9999.0, authority.getNumber("server.port"), 0.0);
@@ -196,7 +199,10 @@ public class AuthorityTest {
         Map<String, Object> replacement = new HashMap<String, Object>();
         List<String> source = new ArrayList<String>(Arrays.asList("x"));
         replacement.put("server.tags", source);
-        authority.applyAll(replacement);
+        Authority.PreparedState prepared = authority.prepareState(replacement);
+        synchronized (authority.transactionLock()) {
+            authority.commitPrepared(prepared);
+        }
         source.add("source-mutation");
         assertEquals(Arrays.asList("x"), authority.get("server.tags"));
     }

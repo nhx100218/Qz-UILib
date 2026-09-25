@@ -32,8 +32,16 @@ public record FieldSpec(
      */
     WidgetSpec widget,
     /** STRUCTURED_LIST 的递归值描述；旧字段由 FieldType 自动映射。 */
-    ValueSpec valueSpec
+    ValueSpec valueSpec,
+    /** 同 section 内的旧键，按声明顺序回退；新键存在（含 null）时始终优先。 */
+    List<String> legacyAliases
 ) {
+    /** 保留八参数构造的源码与二进制入口。 */
+    public FieldSpec(String path, FieldType type, Object defaultValue, FieldConstraints constraints,
+                     String label, String helper, WidgetSpec widget, ValueSpec valueSpec) {
+        this(path, type, defaultValue, constraints, label, helper, widget, valueSpec,
+                Collections.<String>emptyList());
+    }
     /** 兼容旧公开七参数构造器。 */
     public FieldSpec(String path, FieldType type, Object defaultValue, FieldConstraints constraints,
                      String label, String helper, WidgetSpec widget) {
@@ -44,6 +52,19 @@ public record FieldSpec(
      * 紧凑构造器，做基本非空校验。
      */
     public FieldSpec {
+        if (legacyAliases == null) {
+            throw new IllegalArgumentException("legacyAliases 不能为 null");
+        }
+        List<String> aliases = new ArrayList<String>();
+        for (String alias : legacyAliases) {
+            if (alias == null || alias.trim().isEmpty() || !alias.equals(alias.trim())
+                    || alias.indexOf('.') >= 0 || alias.indexOf('[') >= 0 || alias.indexOf(']') >= 0
+                    || aliases.contains(alias)) {
+                throw new IllegalArgumentException("旧键必须是唯一的 section 内简单键: " + alias);
+            }
+            aliases.add(alias);
+        }
+        legacyAliases = Collections.unmodifiableList(aliases);
         if (path == null) {
             throw new IllegalArgumentException("FieldSpec.path 不能为 null");
         }
@@ -118,6 +139,16 @@ public record FieldSpec(
 
         // widget 声明（NUMBER 专用），null = 默认 input
         private WidgetSpec widget;
+        private final List<String> legacyAliases = new ArrayList<String>();
+
+        /** 声明加载期旧键；仅同 section 相对键，按声明顺序回退。 */
+        public Builder<T> legacyAliases(String... aliases) {
+            if (aliases == null) {
+                throw new IllegalArgumentException("legacyAliases 不能为 null");
+            }
+            legacyAliases.addAll(Arrays.asList(aliases));
+            return this;
+        }
 
         // 约束相关
         private Double min;       // null = 未设
@@ -305,7 +336,7 @@ public record FieldSpec(
                 required
             );
             validateConstraints(resolved, constraints);
-            parent.addField(new FieldSpec(path, type, resolved, constraints, label, helper, widget, valueSpec));
+            parent.addField(new FieldSpec(path, type, resolved, constraints, label, helper, widget, valueSpec, legacyAliases));
             return parent;
         }
 

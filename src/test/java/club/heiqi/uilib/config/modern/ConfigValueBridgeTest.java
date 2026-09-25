@@ -361,7 +361,7 @@ public class ConfigValueBridgeTest {
 
     /**
      * 字号配置项改名的迁移语义：文件里仍是历史键（{@code fontSizeSetting.charSize} /
-     * {@code awtCharSize}）时，<b>旧值生效并完成一次性迁移</b>——旧键从权威态移除，
+     * {@code awtCharSize}）时，<b>加载时旧值生效并完成归一</b>——打开草稿前旧键已从权威态移除，
      * 此后写新键不再被旧值顶回。
      *
      * <p>为什么必须删而不是长期回退：历史键在新 schema 里不再是字段，会落进 section raw overlay，
@@ -378,21 +378,27 @@ public class ConfigValueBridgeTest {
                 "  awtCharSize: 96.0"), java.nio.charset.StandardCharsets.UTF_8);
         ConfigManager manager = ConfigManager.bootstrap(file, schema);
         Authority authority = manager.authority();
+        // #76：页面先打开，排队的 Bridge 下一 tick 才投影；投影不得使草稿过期。
+        DraftBuffer draft = manager.openDraft();
 
         ConfigValueBridge.applyFromAuthority(authority);
         assertEquals("历史键 charSize 的值应生效", 12.0, FontConfig.gameCharSize, 0.0);
         assertEquals("历史键 awtCharSize 的值应生效", 96.0, FontConfig.glyphGenerationSize, 0.0);
-        assertNull("迁移后历史键应从权威态移除",
-                authority.consumeLegacySectionNumber("fontSizeSetting", "charSize"));
-        assertNull("迁移后历史键应从权威态移除",
-                authority.consumeLegacySectionNumber("fontSizeSetting", "awtCharSize"));
-
-        DraftBuffer draft = manager.openDraft();
+        assertEquals(12.0, authority.getNumber("fontSizeSetting.gameCharSize"), 0.0);
+        assertEquals(96.0, authority.getNumber("fontSizeSetting.glyphGenerationSize"), 0.0);
         draft.setDraft("fontSizeSetting.gameCharSize", "15.0");
         SaveOutcome outcome = manager.save(draft);
         assertTrue("新键必须可保存: " + outcome.status(), outcome.isSuccess());
         ConfigValueBridge.applyFromAuthority(manager.authority());
         assertEquals("历史键不得再覆盖新键", 15.0, FontConfig.gameCharSize, 0.0);
+
+        // reload 后同样先打开草稿再投影，覆盖用户丢弃编辑后重试的路径。
+        DraftBuffer reloaded = manager.reloadDraftFromDisk();
+        long beforeProjection = authority.revision();
+        ConfigValueBridge.applyFromAuthority(authority);
+        assertEquals(beforeProjection, authority.revision());
+        reloaded.setDraft("fontSizeSetting.gameCharSize", "16.0");
+        assertTrue(manager.save(reloaded).isSuccess());
     }
 
     /**
